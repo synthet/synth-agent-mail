@@ -16,7 +16,14 @@ use crate::error::{invalid, Error, Result};
 use crate::identity::{fingerprint, validate_public, PublicIdentity};
 
 pub const DB_FILE: &str = "mail.db";
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Applied in order to bring an older `mail.db` up to `SCHEMA_VERSION`.
+const MIGRATIONS: &[(i64, &str)] = &[(
+    2,
+    "ALTER TABLE outbox ADD COLUMN downgraded INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE sent ADD COLUMN delivery_json TEXT;",
+)];
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS contacts (
@@ -126,7 +133,7 @@ pub enum Received {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
     path: PathBuf,
 }
 
@@ -151,9 +158,36 @@ impl Store {
             ));
         }
         conn.execute_batch(SCHEMA).map_err(db)?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+        let mut store = Store { conn, path };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// Brings the schema to `SCHEMA_VERSION`. The version is read again inside an immediate
+    /// transaction, so two processes opening the same file can't both apply a step.
+    fn migrate(&mut self) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db)?;
-        Ok(Store { conn, path })
+        let version: i64 = tx
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(db)?;
+        if version > SCHEMA_VERSION {
+            return Err(invalid(
+                "mail.db",
+                format!("schema version {version} is newer than this build ({SCHEMA_VERSION})"),
+            ));
+        }
+        // A fresh file has the current baseline tables but version 0; baseline is version 1.
+        for (target, sql) in MIGRATIONS {
+            if version.max(1) < *target {
+                tx.execute_batch(sql).map_err(db)?;
+            }
+        }
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(db)?;
+        tx.commit().map_err(db)
     }
 
     pub fn path(&self) -> &Path {
@@ -306,7 +340,7 @@ impl Store {
     }
 }
 
-fn contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Contact>> {
+pub(crate) fn contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Contact>> {
     let fp: String = row.get(0)?;
     let identity_json: String = row.get(1)?;
     let endpoint: Option<String> = row.get(2)?;
@@ -319,6 +353,6 @@ fn contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Contact>> {
         }))
 }
 
-fn db(error: rusqlite::Error) -> Error {
+pub(crate) fn db(error: rusqlite::Error) -> Error {
     Error::Db(error.to_string())
 }

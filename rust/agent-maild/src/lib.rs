@@ -1,10 +1,13 @@
 //! `agent-maild`, the always-on mailer (ADR 0005). It is the only process that uses the network:
 //! it receives sealed messages into `mail.db`, answers multicast discovery, and records hosts it
-//! finds by multicast, `hosts.json` and Tailscale. Draining the outbox arrives with T-3.
+//! finds by multicast, `hosts.json` and Tailscale. It also drains the outbox that the CLI, MCP and
+//! tray fill through `mail_core::send::submit`.
 
 pub mod advert;
 pub mod discovery;
 pub mod http;
+pub mod ipc;
+pub mod outbox;
 pub mod probe;
 
 use std::net::SocketAddr;
@@ -38,6 +41,8 @@ pub struct Config {
     pub scan_interval: Option<Duration>,
     /// Port to probe for `hosts.json` entries without one, and for Tailscale peers.
     pub peer_port: u16,
+    /// Drain the outbox and serve the local channel (`poke`, `status`).
+    pub deliver: bool,
 }
 
 impl Config {
@@ -50,6 +55,7 @@ impl Config {
             tailscale: false,
             scan_interval: None,
             peer_port: DEFAULT_PORT,
+            deliver: false,
         }
     }
 }
@@ -81,7 +87,21 @@ pub async fn start(config: Config) -> Result<Mailer, BoxError> {
         store: Mutex::new(store),
         port,
     });
-    let mut tasks = vec![tokio::spawn(http::serve(listener, receiver))];
+    let mut tasks = Vec::new();
+    if config.deliver {
+        // Owning the local channel is what keeps a second mailer off this home, so claim it
+        // before serving anything.
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let status = Arc::new(ipc::Status {
+            home: config.home.clone(),
+            fingerprint: fingerprint.clone(),
+            port,
+        });
+        tasks.push(ipc::serve(notify.clone(), status)?);
+        let outbox = Arc::new(outbox::Outbox::new(config.home.clone(), identity.clone()));
+        tasks.push(tokio::spawn(outbox.run(notify)));
+    }
+    tasks.push(tokio::spawn(http::serve(listener, receiver)));
     if let Some(discovery) = config.discovery {
         tasks.push(discovery::respond(Arc::new(identity), port, discovery)?);
     }

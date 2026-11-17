@@ -8,7 +8,12 @@ pub mod canonical;
 pub mod envelope;
 pub mod error;
 pub mod identity;
+pub mod ipc;
 pub mod js;
+pub mod migrate;
+pub mod outbox;
+pub mod policy;
+pub mod send;
 pub mod store;
 pub mod wire;
 

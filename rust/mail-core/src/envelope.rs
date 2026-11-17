@@ -26,10 +26,25 @@ pub const MAX_HOP: u8 = 16;
 /// Which optional fields a parser accepts. Unknown fields are always rejected, as zod `.strict()` does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Envelope {
+    /// Plain `agent-mail/1`: a receiver that answers `/capabilities` with 404 or not at all.
+    V1_0,
     /// `agent-mail/1` plus the 1.1 routing fields: what TypeScript peers accept.
     V1_1,
     /// Also accepts `project`.
     V1_2,
+}
+
+impl Envelope {
+    /// Which envelope a `/capabilities` answer allows: the highest version it lists.
+    pub fn accepted_by(versions: &[String]) -> Envelope {
+        if versions.iter().any(|v| v == ENVELOPE_V1_2) {
+            Envelope::V1_2
+        } else if versions.iter().any(|v| v == ENVELOPE_V1_1) {
+            Envelope::V1_1
+        } else {
+            Envelope::V1_0
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,6 +169,9 @@ impl Message {
             }
         }
         self.to_session = optional_label("to_session", self.to_session.take(), 200)?;
+        if accept < Envelope::V1_1 && self.has_routing_fields() {
+            return Err(Error::Json("routing fields need agent-mail/1.1".into()));
+        }
         if self.hop.is_some_and(|hop| hop > MAX_HOP) {
             return Err(invalid("hop", "must be 0-16"));
         }
@@ -220,7 +238,33 @@ impl Message {
         if accept < Envelope::V1_2 && self.project.take().is_some() {
             dropped = true;
         }
+        if accept < Envelope::V1_1 && self.has_routing_fields() {
+            self.to_session = None;
+            self.hop = None;
+            self.auto_reply = None;
+            self.in_reply_to = None;
+            dropped = true;
+        }
         dropped
+    }
+
+    /// The 1.1 routing fields (ADR 0003).
+    pub fn has_routing_fields(&self) -> bool {
+        self.to_session.is_some()
+            || self.hop.is_some()
+            || self.auto_reply.is_some()
+            || self.in_reply_to.is_some()
+    }
+
+    /// The lowest envelope a receiver must accept to take this message unchanged.
+    pub fn needs(&self) -> Envelope {
+        if self.project.is_some() {
+            Envelope::V1_2
+        } else if self.has_routing_fields() {
+            Envelope::V1_1
+        } else {
+            Envelope::V1_0
+        }
     }
 }
 

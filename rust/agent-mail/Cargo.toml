@@ -1,0 +1,21 @@
+[package]
+name = "agent-mail"
+version = "0.1.0"
+description = "agent-mail CLI: queues mail for the mailer, reads the inbox, pins peers, migrates the TS store"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "agent-mail"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+mail-core = { path = "../mail-core" }
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+agent-maild = { path = "../agent-maild" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "io-util"] }
