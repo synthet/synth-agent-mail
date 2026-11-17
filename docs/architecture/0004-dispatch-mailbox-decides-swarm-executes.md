@@ -1,7 +1,8 @@
 # ADR 0004 — Dispatch: the mailbox decides, swarm executes
 
 Date: 2026-11-10
-Status: Accepted (2026-11-10, owner).
+Status: Accepted (2026-11-10, owner). Decisions 1 and 5 and "swarm is the only place that starts a
+headless harness" are superseded by [ADR 0005](./0005-rust-mailer-tray-headless.md) once it is accepted.
 
 ## Context
 
