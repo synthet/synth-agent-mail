@@ -8,7 +8,8 @@ pub mod canonical;
 pub mod envelope;
 pub mod error;
 pub mod identity;
-mod js;
+pub mod js;
+pub mod store;
 pub mod wire;
 
 pub use envelope::{AgentMeta, Envelope, Message, Origin};
