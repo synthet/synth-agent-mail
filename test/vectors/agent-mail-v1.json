@@ -1,0 +1,401 @@
+{
+  "note": "TEST ONLY. Keys derive from public seeds (sha256 of a label); they protect nothing. Regenerate with node test/gen-vectors.mjs --write.",
+  "identities": {
+    "alice": {
+      "name": "alice",
+      "signing_seed": "96682c7a907e529b743fe806584800464c152b217e2c087e53dadf3925dd4cbd",
+      "encryption_seed": "114003f369b7b87901116cb221d848f79cc297b3c89d40268b1436c287fab8d2",
+      "signing_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAiXzufc6KtmpyAMf7cm5Ti7gwRR9WCueCj21yzwAliC0=\n-----END PUBLIC KEY-----\n",
+      "encryption_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VuAyEAwKSpDDtx9GxFvjGJhNJtSaSLXEiPJ4LaBiai17iggCk=\n-----END PUBLIC KEY-----\n",
+      "fingerprint": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45"
+    },
+    "bob": {
+      "name": "bob",
+      "signing_seed": "ce9c1e9759b2fd0dc66d08cc923c68302f1ca7beb87f94b77d152546b519935e",
+      "encryption_seed": "469153ecd08f1f5aca2304785e24990487c2e7496cb06fd2accea72f675ce193",
+      "signing_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAMiGh69VrQwoHjO6nOpr33NKKHxODrFbeOFEIsntibCo=\n-----END PUBLIC KEY-----\n",
+      "encryption_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VuAyEATyYIxMGUYiwXmbwENtMWAdsNVBfUWyRqJ2Oq9X234xw=\n-----END PUBLIC KEY-----\n",
+      "fingerprint": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892"
+    }
+  },
+  "messages": [
+    {
+      "label": "minimal",
+      "input": {
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "created_at": 1763337600000,
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "text": "hello",
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        }
+      },
+      "canonical": "{\"conversation_id\":\"00000000-0000-4000-8000-000000000002\",\"created_at\":1763337600000,\"id\":\"00000000-0000-4000-8000-000000000001\",\"origin\":{\"addresses\":[],\"arch\":\"x64\",\"hostname\":\"pc1\",\"platform\":\"win32\"},\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"sender\":\"fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45\",\"text\":\"hello\"}",
+      "signed": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      },
+      "json": "{\"id\":\"00000000-0000-4000-8000-000000000001\",\"conversation_id\":\"00000000-0000-4000-8000-000000000002\",\"sender\":\"fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45\",\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"text\":\"hello\",\"created_at\":1763337600000,\"origin\":{\"hostname\":\"pc1\",\"platform\":\"win32\",\"arch\":\"x64\",\"addresses\":[]},\"signature\":\"QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA==\"}",
+      "digest": "3a73b4b539c2b45dd71b96b5c96b34f681ae6dc97062c34da21a69e15aff0196",
+      "receipt": {
+        "payload": "{\"protocol\":\"agent-mail/1 receipt\",\"digest\":\"3a73b4b539c2b45dd71b96b5c96b34f681ae6dc97062c34da21a69e15aff0196\"}",
+        "signature": "Dvl8DEe4ZVOFUTufMqW1wT4kmwSMXHUkq6kYZNEtW58SPKsc42hEFJhxjBvWy3vHpGUZaY1djUs7EoIld1NNBQ=="
+      },
+      "packet": {
+        "payload": "{\"protocol\":\"agent-mail/1\",\"identity\":{\"name\":\"alice\",\"signing_key\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAiXzufc6KtmpyAMf7cm5Ti7gwRR9WCueCj21yzwAliC0=\\n-----END PUBLIC KEY-----\\n\",\"encryption_key\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEAwKSpDDtx9GxFvjGJhNJtSaSLXEiPJ4LaBiai17iggCk=\\n-----END PUBLIC KEY-----\\n\"},\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"timestamp\":1794927227328,\"ephemeral\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEA99VYAHrSxW9fifytqzexwFJW1ezZmxsK6qnLAAP9YHU=\\n-----END PUBLIC KEY-----\\n\",\"iv\":\"+DFQdkRGZlw7lhRB\",\"tag\":\"E54N9GMYRiwD0CNP6yHRnw==\",\"ciphertext\":\"TqXi9allc6vrUjWB0xiFO8RDTOrVi/4BA2ahowBwaHyt+eYmTllVQU9PFLY5UaAGWY0LET3qH+1Kw+ywrYznvhQ3jUZA2VtFpAYo3QTJ99A0aanyX8LaB4a/ZMtUPvGfZZsgzCahVmQ2qlUVAh+NQ2IedsymiZUQunF/VVurmTAhw/eOVKcSnj4e267OLOEU7GurVRq3zZsTo7GlWSFB94V4OnlCBJc9Gnb4GCCH8ifSgvVcvgV/r9+v/nM7Q66/1FtxH8tfNumJNMUOZlbWUWB9b+ci/tde6vHJnvSqbD+AZ+cikD5n4paQFbZ2zQzpTDyKiHZZQzfrU2ELOhb8dQgg/uMy02jRFI1zpHwk2ZwsZvBZ7Y4NzgRAnxNWLq7KgVGNa4G2e7GSn0c8+cr0MyN2eGe43qZBoNN8BGNHUCSSrt9132Nvxec69IrY8Br98rJkHA9mnkHFqvZ4FxltPzbIIOZVYNz+dhouKu8AqXYPxpAU1xoXKwXkRwV8sVQjFayX0w8SRT16P03+sCfwf3dh0Q+M3j9WdyEqf0zPD76ggOTPXnzXohbta4+0ckfqRfE5AJ4PDkxjwUdJBnIXnYnooJ/64lpbb5TXjI/sJokBhRL13UobMYzrlI4i\"}",
+        "signature": "FL8YYIeb76DUHNSDAY48/sn8IPrOqlAkTs0Yj03NBA6WrZqCsqQ1/jH1HAHg+9qOdvOPJ+qIR95vSkwC+xiTBg=="
+      }
+    },
+    {
+      "label": "full-1.1-escapes-and-trim",
+      "input": {
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "created_at": 1763337600000,
+        "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+        "conversation_id": "00000000-0000-4000-8000-000000000003",
+        "text": "Grüße \"quoted\" \\ back\nslash\t tab \u0001 ctrl  del 😀   line-sep </script>",
+        "origin": {
+          "hostname": "  pc1.local ",
+          "platform": " win32 ",
+          "arch": "x64",
+          "addresses": [
+            "192.168.1.20",
+            "fe80::1",
+            "100.64.0.3"
+          ]
+        },
+        "agent": {
+          "harness": " claude-code ",
+          "name": "claude",
+          "model": "opus",
+          "session_id": "s-1"
+        },
+        "to_session": "  session one  ",
+        "hop": 3,
+        "auto_reply": true,
+        "in_reply_to": "00000000-0000-4000-8000-000000000001"
+      },
+      "canonical": "{\"agent\":{\"harness\":\"claude-code\",\"model\":\"opus\",\"name\":\"claude\",\"session_id\":\"s-1\"},\"auto_reply\":true,\"conversation_id\":\"00000000-0000-4000-8000-000000000003\",\"created_at\":1763337600000,\"hop\":3,\"id\":\"6F9619FF-8B86-D011-B42D-00C04FC964FF\",\"in_reply_to\":\"00000000-0000-4000-8000-000000000001\",\"origin\":{\"addresses\":[\"192.168.1.20\",\"fe80::1\",\"100.64.0.3\"],\"arch\":\"x64\",\"hostname\":\"pc1.local\",\"platform\":\"win32\"},\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"sender\":\"fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45\",\"text\":\"Grüße \\\"quoted\\\" \\\\ back\\nslash\\t tab \\u0001 ctrl  del 😀   line-sep </script>\",\"to_session\":\"session one\"}",
+      "signed": {
+        "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+        "conversation_id": "00000000-0000-4000-8000-000000000003",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "Grüße \"quoted\" \\ back\nslash\t tab \u0001 ctrl  del 😀   line-sep </script>",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1.local",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": [
+            "192.168.1.20",
+            "fe80::1",
+            "100.64.0.3"
+          ]
+        },
+        "agent": {
+          "harness": "claude-code",
+          "name": "claude",
+          "model": "opus",
+          "session_id": "s-1"
+        },
+        "to_session": "session one",
+        "hop": 3,
+        "auto_reply": true,
+        "in_reply_to": "00000000-0000-4000-8000-000000000001",
+        "signature": "x10AmbWEMCXOH/Hq42xgx2acIbgj6CXR0ORiIm6CS8cKvvj/EOEZGssqqBDIUMMgnGzxnrUujdyYF65seQ59CQ=="
+      },
+      "json": "{\"id\":\"6F9619FF-8B86-D011-B42D-00C04FC964FF\",\"conversation_id\":\"00000000-0000-4000-8000-000000000003\",\"sender\":\"fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45\",\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"text\":\"Grüße \\\"quoted\\\" \\\\ back\\nslash\\t tab \\u0001 ctrl  del 😀   line-sep </script>\",\"created_at\":1763337600000,\"origin\":{\"hostname\":\"pc1.local\",\"platform\":\"win32\",\"arch\":\"x64\",\"addresses\":[\"192.168.1.20\",\"fe80::1\",\"100.64.0.3\"]},\"agent\":{\"harness\":\"claude-code\",\"name\":\"claude\",\"model\":\"opus\",\"session_id\":\"s-1\"},\"to_session\":\"session one\",\"hop\":3,\"auto_reply\":true,\"in_reply_to\":\"00000000-0000-4000-8000-000000000001\",\"signature\":\"x10AmbWEMCXOH/Hq42xgx2acIbgj6CXR0ORiIm6CS8cKvvj/EOEZGssqqBDIUMMgnGzxnrUujdyYF65seQ59CQ==\"}",
+      "digest": "3b4b260b8fa82e91fc324e0af014d66b19939ff066f73237683984765740ec14",
+      "receipt": {
+        "payload": "{\"protocol\":\"agent-mail/1 receipt\",\"digest\":\"3b4b260b8fa82e91fc324e0af014d66b19939ff066f73237683984765740ec14\"}",
+        "signature": "bYO5p0A3VYC5L27dxRbqYBGwKFfNe+m3eGeOIfC0sXw+4iEuNeb0ucjna/p851PVoNhxO/sA8+tSlzZKBKUCDA=="
+      },
+      "packet": {
+        "payload": "{\"protocol\":\"agent-mail/1\",\"identity\":{\"name\":\"alice\",\"signing_key\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAiXzufc6KtmpyAMf7cm5Ti7gwRR9WCueCj21yzwAliC0=\\n-----END PUBLIC KEY-----\\n\",\"encryption_key\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEAwKSpDDtx9GxFvjGJhNJtSaSLXEiPJ4LaBiai17iggCk=\\n-----END PUBLIC KEY-----\\n\"},\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"timestamp\":1794927227336,\"ephemeral\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEA5tD5MCAiTt3fPkdTci9fEOCsKNaBLaFg7u2xvoHpJg4=\\n-----END PUBLIC KEY-----\\n\",\"iv\":\"958MSgKproOj6Xm9\",\"tag\":\"fIamXFIJNTh2+GVs0kaYyg==\",\"ciphertext\":\"cUR67P7AGQJCj9IYMxNutbnJWYfgkH0F2q4fL+ik39j8q3gyr82hjC3iaC+H5cCQ2eSSx8i9EM/WmouuyM/PgByplb0raYMnpAW1Y64GaXEdrG8Jf9tx0fJLnY5FU+ndarSXnZdIoH/sPkhKjB9hHB/6U8jWEa7PQWfXz/QOSlCxziO5s55MgBJTWNLZf4eh2xwcXDaD1pgnL7Ut/BAPBtlX2d4MBV41/6ZKxVz9XtMHoKqrLHG5AKusz+YlL4iS5U7+UhoQUbIoTIQDNw+rqN7hFpeHv+Ebw+kE0u/MbeU9riZ2bzD5Sn21v8GGuHiJ6kyChs66Sz3Z9dywmTyQm2yFKjNW7gLMksX6y+/nNMmm4WMuuXsecXhusRFSzrVFdRzab/yLjigRiT9LhhYW+4Nz1w2N1XgXfT74wAAUJkHljLggV0aYdOGirSlwgxkE1MPbfklBwtaUz8m4rkVNbEJC4SylfC6O8t3tqByH/olcJS6EJNON8HQpyr11rlbdKl5Eq41fJIU3m2Li/eBLxEoNKCkpHhM7J7xzEqR6mHJv5HG1vJ1d/2v7PnUH6m4166XCbKeA3YNMCc5yYTAoD/ue4AQnvx/rRmipzPb9HJ9rpiDWL2YyZ4tiw9dVpeYMpgyIB8eSpf8dg6AUcyWqGO1g3flMFLeYXPhCkS0i7Gp1TBjmMYllH7F6d88+sO+nzPUdZ5jZeoT9s7KxZbhNbdu5KGNw6CUcDqDsJV71ShDe80sLoC2yr7FWonbhr/olF21wzitKKfJH0oRldeCJsrzWE/Q/frjRJAInNFY5yen0kZ3K/RhpScehV3uTYrnJ7fy6GaG6VpjHV511kvRTfk7iC7ERKQaF/fhxTZ4wSqqNGdyAxB4b4m/b6ilb2HydQZLw1qDDZWtavcl+B5U4bJaHCp1NF1qK6xvyurtvHI6hkrlT+jmIUKyNBzSnaNsY9NIV4iXd95JxlzOrEIOXPJ8I6sAnuUAWDDw//yMqRllivgpGzmSub4ebZVbCZ4c2kXcq1jXnjh/lV6F6dKvqSgdXEi0HMA==\"}",
+        "signature": "G6xkmkxJ8yYV6NU3fhE/d2a3nG6eO7K40BLhrTXWZkEcm4nZApQkGIu0dxNGJDj8aWq4pijU87iq4ohopju0Cg=="
+      }
+    },
+    {
+      "label": "agent-partial",
+      "input": {
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "created_at": 1763337600000,
+        "id": "00000000-0000-4000-8000-000000000004",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "origin": {
+          "hostname": "h",
+          "platform": "linux",
+          "arch": "arm64",
+          "addresses": [
+            "10.0.0.1"
+          ]
+        },
+        "agent": {
+          "model": "gpt"
+        },
+        "hop": 0,
+        "auto_reply": false
+      },
+      "canonical": "{\"agent\":{\"model\":\"gpt\"},\"auto_reply\":false,\"conversation_id\":\"00000000-0000-4000-8000-000000000002\",\"created_at\":1763337600000,\"hop\":0,\"id\":\"00000000-0000-4000-8000-000000000004\",\"origin\":{\"addresses\":[\"10.0.0.1\"],\"arch\":\"arm64\",\"hostname\":\"h\",\"platform\":\"linux\"},\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"sender\":\"fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45\",\"text\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}",
+      "signed": {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "h",
+          "platform": "linux",
+          "arch": "arm64",
+          "addresses": [
+            "10.0.0.1"
+          ]
+        },
+        "agent": {
+          "model": "gpt"
+        },
+        "hop": 0,
+        "auto_reply": false,
+        "signature": "pFFwH8wkTclSe7+tHj5cPaCrrKgn9DhoqhgDlYSo0cOBlCm4DFo5vhSgWlMI+zg9copIPmiv/NPb+nTEIVSAAw=="
+      },
+      "json": "{\"id\":\"00000000-0000-4000-8000-000000000004\",\"conversation_id\":\"00000000-0000-4000-8000-000000000002\",\"sender\":\"fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45\",\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"text\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"created_at\":1763337600000,\"origin\":{\"hostname\":\"h\",\"platform\":\"linux\",\"arch\":\"arm64\",\"addresses\":[\"10.0.0.1\"]},\"agent\":{\"model\":\"gpt\"},\"hop\":0,\"auto_reply\":false,\"signature\":\"pFFwH8wkTclSe7+tHj5cPaCrrKgn9DhoqhgDlYSo0cOBlCm4DFo5vhSgWlMI+zg9copIPmiv/NPb+nTEIVSAAw==\"}",
+      "digest": "714b29f1700b0775d517a308544fb738b4a04caec289be1a74c56e4da67559c5",
+      "receipt": {
+        "payload": "{\"protocol\":\"agent-mail/1 receipt\",\"digest\":\"714b29f1700b0775d517a308544fb738b4a04caec289be1a74c56e4da67559c5\"}",
+        "signature": "tFYj+ixp5E0xfszfoWbNVDk3KlPEQciRD9r58WrNX9+ISz1deE3FRxNDnlzib545Rabe+WR/sR3mHEBzoOLLAg=="
+      },
+      "packet": {
+        "payload": "{\"protocol\":\"agent-mail/1\",\"identity\":{\"name\":\"alice\",\"signing_key\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAiXzufc6KtmpyAMf7cm5Ti7gwRR9WCueCj21yzwAliC0=\\n-----END PUBLIC KEY-----\\n\",\"encryption_key\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEAwKSpDDtx9GxFvjGJhNJtSaSLXEiPJ4LaBiai17iggCk=\\n-----END PUBLIC KEY-----\\n\"},\"recipient\":\"1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892\",\"timestamp\":1794927227339,\"ephemeral\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VuAyEAxTGj2Iq/7JMsNacNiP9mfkXH+RK6Vv5t5GIUVihhe00=\\n-----END PUBLIC KEY-----\\n\",\"iv\":\"YiiaD7r+BcjBE5CG\",\"tag\":\"AUkRgo5u1YZRkLPfD5mpiA==\",\"ciphertext\":\"NrYpnqNpRCOh+QyS/USg32pt4VMfQjgmVKdLfatG+09x58RMhTEZ3izBVZA1H11ZE/XEv8wVMh7qAWQMZRWlNzVQFBogVnQi/FTNhyGAuB/QXevu9mG9+6E7GySHWXoBv7EfLzOttLZCZt3zIAs+zGTdEN4x2iPpjyNBjpDFIQOHIMQziZL4VByRtoa1halejhbu962RO0vT3bv9xW2l9DhbJb3Fo6u0FpE/h/82+EGVuwRYx4A9tdXIwX8yAhrse1O+g3pmxoXN/RG/B8EqNj1kfZoBVrIyVOIlVRqiyf2FfmTBZxFW7/Zzy4cU+800DSp90oOG1UGTdxiQKMBUF/BBfOjWXL39hhU0NUmddy7f3j/oMhL/4YdIVSQv0i4Nl8hYPKD9ubSq1Zo/+mlcYHIhZ9GL7A8spjRVSkWr7HTDDVuiG0KnnVYw1kvrag63Fhl0qCcGaY8FHW7znaM6qoTm/XIgWGALQpjJwGItgVQ1Xbx2R754xiFvdZNN8QJBwCfVTuegHeH94ptFyKbWYuPpJ/HDVEepB6OCOrPQJwJy0KmDQjMzCh/9t26mWJ8r4/ik9cnVaaiHNuIHd49yaqXDpQYsoVL6DpFw+QajILNWVpU1eg7PzWPq9CcUKw3Pl0K+v0F+2tIkXeaRW1LytTbiKllQ+gaf1g6462f2HhO79jIdrwz0WRrp4Ib/TeFEyTAg46S5XGlDnBEJ6szGfs6UK6z3GUcuRJCbc8CKcyqZHlTGurW49p9udVZuaDeapFERGp67x/pOOj2pOqY4YX65pFUGFBl4LtrUR/0XrdHDylMFgvKjKrGOhUNvFI6mLfuk3Y4j+FANfwBMsE+/KfbxcuJ8GjzYmeqeSE//DlWA2SP3Ypt/ns13k+er9D0FFb64Uf/Ym+drWv0mYteCWWqMSSbCq/biv7Xqf56IO3mhzMHSVO7wEDBssb07hQrZdYhX8sHmodACYF/WHfz5ZJXl+bBxHwS95ZerRqm+ZCmA7UqDv+TFQzIhsDzG6B0WeHkfAGcZfDmxw960pHQvXSWNgWxCiAGAAOgp/mv0rdl4OYfeD8cT1gw+eZtN+layobxv/vRS6xNqiEWC+RjB8Kg=\"}",
+        "signature": "z0nSniMNb5ySpP6YjO1EMf8Z9GejyIHxgmajtKgi0WYgu2GnnIvYyjYG6ru1jjkHINuPASKqis8ZJtMkqkY9Cw=="
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "label": "unknown-field",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA==",
+        "project": "demo"
+      }
+    },
+    {
+      "label": "bad-uuid",
+      "message": {
+        "id": "not-a-uuid",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "empty-text",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "empty-agent",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA==",
+        "agent": {}
+      }
+    },
+    {
+      "label": "hop-too-high",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA==",
+        "hop": 17
+      }
+    },
+    {
+      "label": "label-line-break",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "a\nb",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "blank-label",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "   ",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "bad-ip",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": [
+            "999.1.1.1"
+          ]
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "leading-zero-ip",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": [
+            "01.2.3.4"
+          ]
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "sender-not-hex",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": 1763337600000,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    },
+    {
+      "label": "negative-created-at",
+      "message": {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "conversation_id": "00000000-0000-4000-8000-000000000002",
+        "sender": "fdf13ca7b79b92ed54f5e3a6d2866987467f4e0f9224c2a343d0698ab1307f45",
+        "recipient": "1bb69c9eb04918e591c0e7230cea0611173f4a077e111f4d45013c08dbc1c892",
+        "text": "hello",
+        "created_at": -1,
+        "origin": {
+          "hostname": "pc1",
+          "platform": "win32",
+          "arch": "x64",
+          "addresses": []
+        },
+        "signature": "QCkrEmIRwhIgDN9f3s2fSQjGlVdUpeiCGYzyC8IVXYWIpNw32p+m/J89KbDbhRRvuSHhOuKihx8ErLzjRmLwCA=="
+      }
+    }
+  ]
+}

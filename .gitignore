@@ -21,3 +21,6 @@ codex-session-*.md
 # Local scratch and machine-local Codex config
 /tmp-*
 /.codex/config.toml
+
+# Rust build output
+/rust/target/
