@@ -43,7 +43,10 @@ The pieces:
 - **AC-4.** WHEN the CLI or MCP sends THEN the message is written to the outbox and `agent-maild` delivers it, retrying with backoff. WHEN the mailer is not running THEN `send` reports `queued` (exit code 2), and the message is delivered after the mailer starts.
 - **AC-5.** WHEN `check_outbound` rejects a text (secret patterns, `max_bytes`, `allowed_peers`, action-request patterns) THEN no outbox row is written. This holds for every send path, replies included.
 - **AC-6.** WHEN the recipient advertises `agent-mail/1.2` THEN the signed `project` field is sent. Otherwise it is dropped and the result reports `envelope_downgraded`. The Rust `/capabilities` lists both 1.1 and 1.2.
-- **AC-7.** `agent-mail mcp` serves the stdio MCP tools with the same names and parameters as `src/peer/mcp.ts`, plus an optional `project` on `send_message`. It never binds a network port.
+- **AC-7.** `agent-mail mcp` serves stdio MCP tools with the same names and parameters as `src/peer/mcp.ts`, plus an optional `project` on `send_message`. It never binds a network port. Tools arrive in three groups:
+  - **T-4:** the peer tools (`whoami`, `discover_peers`, `list_agents`, `send_message`, `reply_to_message`, `fetch_inbox`, `acknowledge_message`, `get_thread`, `queue_status`, `retry_outbox`).
+  - **T-7:** the session and same-PC message tools (`mailbox_register_session`, `mailbox_list_sessions`, `mailbox_session_heartbeat`, `mailbox_session_end`, `mailbox_lease_conversation`, `mailbox_release_conversation`, `mailbox_publish`, `mailbox_list`, `mailbox_ack`, `mailbox_search`, `mailbox_poll`), backed by `mail.db` tables for same-PC use only, with no sync.
+  - **Not ported:** `mailbox_subscribe`, `mailbox_offer_task`, `mailbox_claim_task` and `mailbox_sync_status` return a `not_ported` error.
 - **AC-8.** `agent-mail migrate` imports the JSON `contacts`, `inbox`, `acked`, `outbox` and `sent` areas, and the journal's sessions and leases, into `mail.db` without deleting or changing the originals. Running it twice imports nothing new.
 - **AC-9.** The tray serves the dashboard on loopback only and checks the Host header. It shows the mailer status, hosts, inbox and runs. Its only write is the kill switch, which changes `dispatch.enabled` and nothing else.
 - **AC-10.** `agent-mail service install` and `agent-mail tray install` create logon tasks for the current user, not SYSTEM. `uninstall` removes them.
@@ -52,7 +55,8 @@ The pieces:
 - **AC-13.** The effective tier is min(folder tier, peer `max_tier`):
   - `read` gets Read, Grep and Glob.
   - `reply` adds the run-bound agent-mail tools.
-  - `edit` adds Edit, Write and Bash, and only for Claude.
+  - `edit` adds Edit and Write, and only for Claude. Claude's Bash tool is not confined to the working directory, so no tier in this epic includes Bash.
+  - Every tier gets generated deny rules for reading or editing the agent-mail home (`identity.json`, `policy.json`, `mail.db`).
 
   Remote text never sets the folder, tier, runner, model or recipient.
 - **AC-14.** A run's reply is taken from the first of these that exists: (a) a run-bound reply call, (b) a non-empty `reply.md`, (c) the final stdout `result`. It is sent with `auto_reply=true`, `hop+1`, and `in_reply_to` derived from the stored message.
@@ -60,4 +64,7 @@ The pieces:
 - **AC-16.** Runners are tried in `dispatch.runners` order, falling back on `not_installed`, `auth_required` and `rate_limited`. A timeout kills the whole process tree. Swarm results count only when `outcome == "ok"`.
 - **AC-17.** At reply tier, the headless agent can list same-PC sessions and publish to them through `mail.db`. Wakes carry only a metadata notice. A live interactive session is never resumed.
 - **AC-18.** ADR 0005 records what it supersedes in ADR 0004 (decisions 1 and 5, "swarm is the only spawner") and what it keeps.
+- **AC-20.** `agent-mail` ports `hook inject|gate|ledger`, `digest`, `watch`, `register`, `session`, `lease` and `harness install` against `mail.db`, so hooks already installed in sessions keep showing mail once the Rust mailer receives it.
+  - Until this lands, the Rust binaries run on a separate `--home` and never take over a PC's live home.
+  - The per-PC cutover is T-10 together with `migrate`.
 - **AC-19.** The README, `docs/operations.md`, the `agent-mailbox` and `mail-dispatch` skills and the `config/*mcp.example.json` files describe the Rust binaries.

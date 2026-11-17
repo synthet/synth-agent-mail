@@ -64,7 +64,11 @@ built in Rust, and the MCP server becomes a native CLI.
    - The effective tier is min(folder tier, the peer's `max_tier`).
    - `read`: Read, Grep and Glob. The tray collects the reply.
    - `reply`: adds the run-bound agent-mail tools (reply, list sessions, publish to a local session).
-   - `edit`: adds Edit, Write and Bash in the folder. It exists only for Claude at first.
+   - `edit`: adds Edit and Write in the folder. It exists only for Claude at first.
+   - No tier includes Bash. Claude's Bash tool runs commands as the user and is not confined to
+     the working directory. A command tier would need its own decision.
+   - Every tier gets generated deny rules for reading or editing the agent-mail home
+     (`identity.json`, `policy.json`, `mail.db`).
    - The default is `read`. `edit` must be set on both the folder and the peer.
 7. **The tray starts headless agents.** This supersedes ADR 0004's rule that swarm is the only
    place that starts a harness.
@@ -122,8 +126,13 @@ built in Rust, and the MCP server becomes a native CLI.
   ended no longer leaves mail stranded in the outbox.
 - The trust boundary is still the agent-mail processes plus `policy.json`, and `policy.json` now
   also grants write access to folders. Keep it owner-writable only and deny agent edits to it.
-- An `edit` folder lets a paired peer's message cause file changes on this PC, within the folder and
-  the budget. That is the owner's opt-in per folder and per peer.
+- An `edit` folder lets a paired peer's message cause file changes in that folder, within the budget.
+  That is the owner's opt-in per folder and per peer. T-8 must show with a test that a headless
+  edit-tier run cannot write outside the folder or touch the agent-mail home. Until that test passes,
+  `edit` is not enabled for any folder.
+- The hooks already installed in sessions call the TS `hook inject` against the JSON store. Until
+  T-10 ports them, the Rust binaries run on a separate `--home`. The per-PC cutover is T-10 plus
+  `migrate`.
 - On a PC, the TS and Rust stacks must not both run at once, because only one process can own TCP
   47832. A TS peer on another PC interoperates over 1.1.
 - Rollback: stop `agent-maild` and the Rust tray, then start the TS tray. `migrate` leaves the JSON
