@@ -42,8 +42,17 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let args = Args::parse();
+async fn main() -> std::process::ExitCode {
+    match run(Args::parse()).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("agent-maild: {error}");
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
+async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let discovery = (!args.no_discovery).then_some(Discovery {
         port: args.discovery_port,
         group: args.discovery_group,
@@ -56,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tailscale: !args.no_tailscale,
         scan_interval: (args.scan_interval > 0).then(|| Duration::from_secs(args.scan_interval)),
         peer_port: args.peer_port,
+        deliver: true,
     })
     .await?;
     eprintln!(
