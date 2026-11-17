@@ -24,6 +24,8 @@ pub enum Error {
     BadReceipt,
     #[error("identity key mismatch")]
     KeyMismatch,
+    #[error("database: {0}")]
+    Db(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }

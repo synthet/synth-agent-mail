@@ -1,0 +1,324 @@
+//! `mail.db`: the local SQLite store shared by the mailer, CLI, MCP and tray (ADR 0005).
+//!
+//! It lives on local disk under the agent-mail home, never in a synced folder (ADR 0002). WAL mode
+//! with a busy timeout lets several processes read and write it. Messages are stored as
+//! `Message::json()` text, which is the exact form the receipt digest covers. Never re-serialize
+//! them through `serde_json::Value`: that sorts the keys.
+
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::Serialize;
+
+use crate::envelope::{Envelope, Message};
+use crate::error::{invalid, Error, Result};
+use crate::identity::{fingerprint, validate_public, PublicIdentity};
+
+pub const DB_FILE: &str = "mail.db";
+const SCHEMA_VERSION: i64 = 1;
+
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS contacts (
+  fingerprint   TEXT PRIMARY KEY,
+  identity_json TEXT NOT NULL,
+  endpoint      TEXT,
+  added_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS hosts (
+  fingerprint   TEXT NOT NULL,
+  endpoint      TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  identity_json TEXT NOT NULL,
+  source        TEXT NOT NULL,
+  first_seen    INTEGER NOT NULL,
+  last_seen     INTEGER NOT NULL,
+  PRIMARY KEY (fingerprint, endpoint)
+);
+CREATE TABLE IF NOT EXISTS inbox (
+  sender          TEXT NOT NULL,
+  id              TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  message_json    TEXT NOT NULL,
+  created_at      INTEGER NOT NULL,
+  received_at     INTEGER NOT NULL,
+  PRIMARY KEY (sender, id)
+);
+CREATE INDEX IF NOT EXISTS inbox_conversation ON inbox (conversation_id);
+CREATE TABLE IF NOT EXISTS acks (
+  sender   TEXT NOT NULL,
+  id       TEXT NOT NULL,
+  acked_at INTEGER NOT NULL,
+  PRIMARY KEY (sender, id)
+);
+CREATE TABLE IF NOT EXISTS outbox (
+  id              TEXT PRIMARY KEY,
+  recipient       TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  message_json    TEXT NOT NULL,
+  state           TEXT NOT NULL DEFAULT 'queued',
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_error      TEXT,
+  created_at      INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sent (
+  id              TEXT PRIMARY KEY,
+  recipient       TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  message_json    TEXT NOT NULL,
+  sent_at         INTEGER NOT NULL
+);
+";
+
+pub fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// A pinned peer. Only `trust` writes these; discovery never does.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Contact {
+    pub fingerprint: String,
+    pub identity: PublicIdentity,
+    pub endpoint: Option<String>,
+}
+
+/// Where a host advert came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostSource {
+    Multicast,
+    Tailscale,
+    Static,
+}
+
+impl HostSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            HostSource::Multicast => "multicast",
+            HostSource::Tailscale => "tailscale",
+            HostSource::Static => "static",
+        }
+    }
+}
+
+/// A host seen through a verified advert. Seeing a host grants it nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Host {
+    pub fingerprint: String,
+    pub endpoint: String,
+    pub name: String,
+    pub source: String,
+    pub last_seen: u64,
+    pub trusted: bool,
+}
+
+/// What `receive` did with a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Received {
+    New,
+    /// The same message again, byte for byte: answer with another receipt.
+    Duplicate,
+    /// Same sender and id, different content: refuse (HTTP 409).
+    Conflict,
+}
+
+pub struct Store {
+    conn: Connection,
+    path: PathBuf,
+}
+
+impl Store {
+    /// Opens or creates `<home>/mail.db`.
+    pub fn open(home: &Path) -> Result<Self> {
+        std::fs::create_dir_all(home)?;
+        let path = home.join(DB_FILE);
+        let conn = Connection::open(&path).map_err(db)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(db)?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(db)?;
+        conn.pragma_update(None, "foreign_keys", "ON").map_err(db)?;
+        let version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(db)?;
+        if version > SCHEMA_VERSION {
+            return Err(invalid(
+                "mail.db",
+                format!("schema version {version} is newer than this build ({SCHEMA_VERSION})"),
+            ));
+        }
+        conn.execute_batch(SCHEMA).map_err(db)?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(db)?;
+        Ok(Store { conn, path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Pins a peer. The fingerprint, when given, must match the identity.
+    pub fn trust(
+        &self,
+        identity: &PublicIdentity,
+        expected: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> Result<String> {
+        validate_public(identity)?;
+        let fp = fingerprint(identity)?;
+        if expected.is_some_and(|expected| expected != fp) {
+            return Err(invalid("fingerprint", "does not match the identity"));
+        }
+        self.conn
+            .execute(
+                "INSERT INTO contacts (fingerprint, identity_json, endpoint, added_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (fingerprint) DO UPDATE SET identity_json = excluded.identity_json,
+                   endpoint = COALESCE(excluded.endpoint, contacts.endpoint)",
+                params![fp, serde_json::to_string(identity)?, endpoint, now_ms() as i64],
+            )
+            .map_err(db)?;
+        Ok(fp)
+    }
+
+    pub fn contact(&self, fp: &str) -> Result<Option<Contact>> {
+        self.conn
+            .query_row(
+                "SELECT fingerprint, identity_json, endpoint FROM contacts WHERE fingerprint = ?1",
+                [fp],
+                contact_row,
+            )
+            .optional()
+            .map_err(db)?
+            .transpose()
+    }
+
+    pub fn contacts(&self) -> Result<Vec<Contact>> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT fingerprint, identity_json, endpoint FROM contacts ORDER BY fingerprint",
+            )
+            .map_err(db)?;
+        let rows = statement.query_map([], contact_row).map_err(db)?;
+        rows.map(|row| row.map_err(db)?).collect()
+    }
+
+    /// Stores a received message, or reports that it is a duplicate or a conflict. One immediate
+    /// transaction, so two receivers racing on the same message can't both insert.
+    pub fn receive(&mut self, message: &Message) -> Result<Received> {
+        let json = message.json();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db)?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT message_json FROM inbox WHERE sender = ?1 AND id = ?2",
+                params![message.sender, message.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db)?;
+        let outcome = match existing {
+            Some(stored) if stored == json => Received::Duplicate,
+            Some(_) => Received::Conflict,
+            None => {
+                tx.execute(
+                    "INSERT INTO inbox (sender, id, conversation_id, message_json, created_at, received_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![message.sender, message.id, message.conversation_id, json, message.created_at as i64, now_ms() as i64],
+                )
+                .map_err(db)?;
+                Received::New
+            }
+        };
+        tx.commit().map_err(db)?;
+        Ok(outcome)
+    }
+
+    /// Unacknowledged inbox messages, oldest first.
+    pub fn inbox(&self, limit: usize) -> Result<Vec<Message>> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT message_json FROM inbox i
+                 WHERE NOT EXISTS (SELECT 1 FROM acks a WHERE a.sender = i.sender AND a.id = i.id)
+                 ORDER BY created_at, received_at LIMIT ?1",
+            )
+            .map_err(db)?;
+        let rows = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(db)?;
+        rows.map(|row| {
+            let json = row.map_err(db)?;
+            Message::parse_signed(serde_json::from_str(&json)?, Envelope::V1_2)
+        })
+        .collect()
+    }
+
+    /// Records a verified advert. `hosts` is separate from `contacts`, so this never pins anyone.
+    pub fn saw_host(
+        &self,
+        identity: &PublicIdentity,
+        endpoint: &str,
+        source: HostSource,
+    ) -> Result<()> {
+        let fp = fingerprint(identity)?;
+        let now = now_ms() as i64;
+        self.conn
+            .execute(
+                "INSERT INTO hosts (fingerprint, endpoint, name, identity_json, source, first_seen, last_seen)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+                 ON CONFLICT (fingerprint, endpoint) DO UPDATE SET name = excluded.name,
+                   identity_json = excluded.identity_json, source = excluded.source, last_seen = excluded.last_seen",
+                params![fp, endpoint, identity.name, serde_json::to_string(identity)?, source.as_str(), now],
+            )
+            .map_err(db)?;
+        Ok(())
+    }
+
+    /// Hosts seen since `since_ms`, most recent first, with whether each is pinned.
+    pub fn hosts(&self, since_ms: u64) -> Result<Vec<Host>> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT h.fingerprint, h.endpoint, h.name, h.source, h.last_seen,
+                        EXISTS (SELECT 1 FROM contacts c WHERE c.fingerprint = h.fingerprint)
+                 FROM hosts h WHERE h.last_seen >= ?1 ORDER BY h.last_seen DESC",
+            )
+            .map_err(db)?;
+        let rows = statement
+            .query_map([since_ms as i64], |row| {
+                Ok(Host {
+                    fingerprint: row.get(0)?,
+                    endpoint: row.get(1)?,
+                    name: row.get(2)?,
+                    source: row.get(3)?,
+                    last_seen: row.get::<_, i64>(4)? as u64,
+                    trusted: row.get(5)?,
+                })
+            })
+            .map_err(db)?;
+        rows.map(|row| row.map_err(db)).collect()
+    }
+}
+
+fn contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Contact>> {
+    let fp: String = row.get(0)?;
+    let identity_json: String = row.get(1)?;
+    let endpoint: Option<String> = row.get(2)?;
+    Ok(serde_json::from_str(&identity_json)
+        .map_err(Error::from)
+        .map(|identity| Contact {
+            fingerprint: fp,
+            identity,
+            endpoint,
+        }))
+}
+
+fn db(error: rusqlite::Error) -> Error {
+    Error::Db(error.to_string())
+}
