@@ -33,10 +33,10 @@ async fn fixture() -> Fixture {
         .unwrap()
         .trust(&alice.public(), None, None)
         .unwrap();
-    let mailer = start(Config {
-        home: home.clone(),
-        listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-    })
+    let mailer = start(Config::receive_only(
+        home.clone(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    ))
     .await
     .unwrap();
     Fixture {

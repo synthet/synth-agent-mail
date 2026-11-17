@@ -67,10 +67,10 @@ async fn typescript_peer_delivers_to_the_rust_mailer() {
         .trust(&alice, alice_json["fingerprint"].as_str(), None)
         .unwrap();
 
-    let mailer = start(Config {
-        home: bob_home.clone(),
-        listen: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
-    })
+    let mailer = start(Config::receive_only(
+        bob_home.clone(),
+        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+    ))
     .await
     .unwrap();
     let bob_public = dir.path().join("bob-public.json");
