@@ -39,8 +39,8 @@ struct Args {
     /// Port probed for hosts.json entries without one, and for Tailscale peers.
     #[arg(long, default_value_t = agent_maild::DEFAULT_PORT)]
     peer_port: u16,
-    /// Write the log to this file instead of the console, and detach from the console. Used by the
-    /// logon task, so no window stays open. A file over 1 MB is moved to <file>.old first.
+    /// Write the log to this file instead of the console. The logon task runs the mailer under
+    /// `conhost --headless`, which hides the window. A file over 1 MB is moved to <file>.old first.
     #[arg(long)]
     log: Option<PathBuf>,
 }
@@ -83,11 +83,13 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     Ok(())
 }
 
-/// Sends stderr (every `eprintln!`) to `path` and drops the console window.
+/// Sends stderr (every `eprintln!`) to `path`. It keeps the console: detaching would let the
+/// logon task's `conhost --headless` exit, so Task Scheduler would report the task as stopped and
+/// its restart-on-failure could never restart a crashed mailer.
 #[cfg(windows)]
 fn log_to_file(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::io::IntoRawHandle;
-    use windows_sys::Win32::System::Console::{FreeConsole, SetStdHandle, STD_ERROR_HANDLE};
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE};
     if std::fs::metadata(path).is_ok_and(|meta| meta.len() > 1_000_000) {
         let _ = std::fs::rename(path, path.with_extension("log.old"));
     }
@@ -97,7 +99,6 @@ fn log_to_file(path: &std::path::Path) -> std::io::Result<()> {
         .open(path)?;
     // Rust's stderr looks the handle up on every write, so swapping it redirects eprintln!.
     unsafe {
-        FreeConsole();
         SetStdHandle(STD_ERROR_HANDLE, file.into_raw_handle() as _);
     }
     Ok(())
