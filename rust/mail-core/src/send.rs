@@ -83,6 +83,90 @@ pub fn submit(
     Ok(store.queue(&message, explicit_conversation)?)
 }
 
+/// ADR 0003 loop guard: an automatic reply is refused once the exchange reaches this depth.
+pub const MAX_AUTO_HOP: u8 = 6;
+
+/// TS `peerReplyShape`: answer a stored message.
+#[derive(Clone, Debug, Default)]
+pub struct ReplyRequest {
+    pub sender: String,
+    pub message_id: String,
+    pub text: String,
+    /// No human wrote or approved this reply: sent with `auto_reply`, and guarded.
+    pub automatic: bool,
+    pub reply_id: Option<String>,
+    /// Agent metadata for the reply (the sender's own harness and session).
+    pub agent: Option<AgentMeta>,
+}
+
+/// TS `Peer.reply`. The recipient, conversation, `in_reply_to`, hop and `to_session` come from the
+/// stored message, never from the caller. `accepts` reports which envelope the peer takes (through
+/// the mailer); `None` means it couldn't be checked, which refuses an automatic reply.
+pub fn reply(
+    home: &Path,
+    identity: &Identity,
+    store: &mut Store,
+    request: ReplyRequest,
+    accepts: impl FnOnce(&str) -> Option<Envelope>,
+) -> std::result::Result<Delivery, SendError> {
+    let sender = request.sender.to_lowercase();
+    let original = store
+        .inbox_message(&sender, &request.message_id)?
+        .ok_or_else(|| SendError::Other(invalid("message_id", "Unknown inbox message")))?;
+    let depth = original.hop.unwrap_or(0);
+    if request.automatic {
+        if original.auto_reply == Some(true) {
+            return Err(SendError::Refused(
+                "reply_refused: the message is itself an automatic reply".into(),
+            ));
+        }
+        if depth >= MAX_AUTO_HOP {
+            return Err(SendError::Refused(format!(
+                "reply_refused: hop limit {MAX_AUTO_HOP} reached"
+            )));
+        }
+        if store.has_auto_reply(&original.id, request.reply_id.as_deref())? {
+            return Err(SendError::Refused(
+                "reply_refused: this message already has an automatic reply".into(),
+            ));
+        }
+        match accepts(&original.sender) {
+            Some(envelope) if envelope >= Envelope::V1_1 => {}
+            Some(_) => {
+                return Err(SendError::Refused(
+                    "reply_refused: the peer does not accept agent-mail/1.1, so it would not see auto_reply".into(),
+                ))
+            }
+            None => {
+                return Err(SendError::Refused(
+                    "reply_refused: couldn't confirm the peer accepts agent-mail/1.1 (is agent-maild running?)".into(),
+                ))
+            }
+        }
+    }
+    submit(
+        home,
+        identity,
+        store,
+        SendRequest {
+            recipient: original.sender.clone(),
+            text: request.text,
+            message_id: request.reply_id,
+            conversation_id: Some(original.conversation_id.clone()),
+            agent: request.agent,
+            to_session: original
+                .agent
+                .as_ref()
+                .and_then(|agent| agent.session_id.clone()),
+            hop: Some((depth + 1).min(crate::envelope::MAX_HOP)),
+            auto_reply: request.automatic.then_some(true),
+            in_reply_to: Some(original.id.clone()),
+            // A reply stays in the project the question was about.
+            project: original.project.clone(),
+        },
+    )
+}
+
 /// A random (v4) UUID.
 pub fn new_uuid() -> String {
     let mut bytes = [0u8; 16];

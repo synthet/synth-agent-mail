@@ -441,4 +441,34 @@ impl Store {
         row.map(|(identity, endpoint)| Ok((serde_json::from_str(&identity)?, endpoint)))
             .transpose()
     }
+
+    /// A received message by sender and id, read or not.
+    pub fn inbox_message(&self, sender: &str, id: &str) -> Result<Option<Message>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT message_json FROM inbox WHERE sender = ?1 AND id = ?2",
+                params![sender, id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(db)?;
+        json.map(|json| parse_stored(&json)).transpose()
+    }
+
+    /// Whether an automatic reply to `original_id` is already sent or queued (other than `except`).
+    pub fn has_auto_reply(&self, original_id: &str, except: Option<&str>) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM sent WHERE json_extract(message_json, '$.in_reply_to') = ?1
+                     AND json_extract(message_json, '$.auto_reply') = 1 AND id <> ?2
+                   UNION ALL
+                   SELECT 1 FROM outbox WHERE json_extract(message_json, '$.in_reply_to') = ?1
+                     AND json_extract(message_json, '$.auto_reply') = 1 AND id <> ?2)",
+                params![original_id, except.unwrap_or("")],
+                |row| row.get(0),
+            )
+            .map_err(db)
+    }
 }

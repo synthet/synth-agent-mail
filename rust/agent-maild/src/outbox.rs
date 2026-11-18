@@ -105,27 +105,8 @@ impl Outbox {
     }
 
     async fn deliver(&self, row: OutboxRow) -> Result<(), BoxError> {
-        let recipient = row.recipient.clone();
-        let contact = self
-            .store(move |store| store.contact(&recipient))
-            .await?
-            .ok_or("Unknown peer; discover and trust its verified fingerprint first")?;
+        let (contact, endpoints) = self.endpoints_for(&row.recipient).await?;
         let fp = contact.fingerprint.clone();
-        let seen = self
-            .store({
-                let fp = fp.clone();
-                move |store| store.endpoints_seen(&fp, now_ms().saturating_sub(SEEN_WITHIN_MS))
-            })
-            .await?;
-        let mut candidates: Vec<String> = contact.endpoint.iter().cloned().collect();
-        candidates.extend(
-            seen.into_iter()
-                .filter(|endpoint| Some(endpoint) != contact.endpoint.as_ref()),
-        );
-        let endpoints: Vec<String> = prefer_local_loopback(candidates)
-            .into_iter()
-            .filter(|endpoint| validate_endpoint(endpoint).is_ok())
-            .collect();
         if endpoints.is_empty() {
             return Err("Peer offline or undiscoverable; message remains queued".into());
         }
@@ -136,6 +117,10 @@ impl Outbox {
                 Envelope::V1_0 => Envelope::V1_0,
                 _ => self.capabilities(&fp, &endpoints).await,
             };
+            // Dropping auto_reply would let the receiver answer an automatic reply automatically.
+            if message.auto_reply == Some(true) && accept < Envelope::V1_1 {
+                return Err("Peer does not accept agent-mail/1.1, so it would not see auto_reply; automatic reply held".into());
+            }
             let downgraded = message.downgrade_to(accept);
             let signed = message.sign(&self.identity, Envelope::V1_2)?;
             let (id, stored) = (row.id.clone(), signed.clone());
@@ -188,6 +173,40 @@ impl Outbox {
             }
         }
         Err(failure)
+    }
+
+    /// The pinned contact and the endpoints to try for it: its saved address first, then
+    /// addresses recent scans saw, with loopback first for this PC's own addresses.
+    async fn endpoints_for(
+        &self,
+        recipient: &str,
+    ) -> Result<(mail_core::store::Contact, Vec<String>), BoxError> {
+        let recipient = recipient.to_owned();
+        let contact = self
+            .store(move |store| store.contact(&recipient))
+            .await?
+            .ok_or("Unknown peer; discover and trust its verified fingerprint first")?;
+        let fp = contact.fingerprint.clone();
+        let seen = self
+            .store(move |store| store.endpoints_seen(&fp, now_ms().saturating_sub(SEEN_WITHIN_MS)))
+            .await?;
+        let mut candidates: Vec<String> = contact.endpoint.iter().cloned().collect();
+        candidates.extend(
+            seen.into_iter()
+                .filter(|endpoint| Some(endpoint) != contact.endpoint.as_ref()),
+        );
+        let endpoints = prefer_local_loopback(candidates)
+            .into_iter()
+            .filter(|endpoint| validate_endpoint(endpoint).is_ok())
+            .collect();
+        Ok((contact, endpoints))
+    }
+
+    /// Which envelope a pinned peer accepts, for callers that must know before queueing (an
+    /// automatic reply must not lose `auto_reply`).
+    pub async fn envelope_for(&self, fp: &str) -> Result<Envelope, BoxError> {
+        let (contact, endpoints) = self.endpoints_for(fp).await?;
+        Ok(self.capabilities(&contact.fingerprint, &endpoints).await)
     }
 
     async fn post(

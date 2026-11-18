@@ -92,13 +92,14 @@ pub async fn start(config: Config) -> Result<Mailer, BoxError> {
         // Owning the local channel is what keeps a second mailer off this home, so claim it
         // before serving anything.
         let notify = Arc::new(tokio::sync::Notify::new());
+        let outbox = Arc::new(outbox::Outbox::new(config.home.clone(), identity.clone()));
         let status = Arc::new(ipc::Status {
             home: config.home.clone(),
             fingerprint: fingerprint.clone(),
             port,
+            outbox: outbox.clone(),
         });
         tasks.push(ipc::serve(notify.clone(), status)?);
-        let outbox = Arc::new(outbox::Outbox::new(config.home.clone(), identity.clone()));
         tasks.push(tokio::spawn(outbox.run(notify)));
     }
     tasks.push(tokio::spawn(http::serve(listener, receiver)));

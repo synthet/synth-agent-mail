@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agent-mail": {
+      "type": "stdio",
+      "command": "C:/path/to/synthet-agent-mailbox/rust/target/release/agent-mail.exe",
+      "args": ["--home", "C:/Users/you/.agent-mail-rs", "mcp", "--harness", "claude-code", "--agent-name", "claude", "--model", "claude"]
+    }
+  }
+}
