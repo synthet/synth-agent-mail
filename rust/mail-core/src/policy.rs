@@ -67,8 +67,13 @@ impl Policy {
             }
             Err(error) => return Err(format!("Invalid policy.json: {error}")),
         };
+        Self::parse(&text)
+    }
+
+    /// Parses and validates policy text, as `load` does for the file.
+    pub fn parse(text: &str) -> std::result::Result<Self, String> {
         let policy: Policy =
-            serde_json::from_str(&text).map_err(|error| format!("Invalid policy.json: {error}"))?;
+            serde_json::from_str(text).map_err(|error| format!("Invalid policy.json: {error}"))?;
         policy
             .validate()
             .map_err(|error| format!("Invalid policy.json: {error}"))?;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["mail-core", "agent-maild", "agent-mail"]
+members = ["mail-core", "agent-maild", "agent-mail", "agent-mail-tray"]
 
 [workspace.package]
 edition = "2021"

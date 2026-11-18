@@ -471,4 +471,59 @@ impl Store {
             )
             .map_err(db)
     }
+
+    /// Newest inbox messages with whether each was acknowledged, for the dashboard.
+    pub fn recent_inbox(&self, limit: usize) -> Result<Vec<(Message, bool)>> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT message_json, EXISTS (SELECT 1 FROM acks a WHERE a.sender = i.sender AND a.id = i.id)
+                 FROM inbox i ORDER BY created_at DESC LIMIT ?1",
+            )
+            .map_err(db)?;
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })
+            .map_err(db)?;
+        rows.map(|row| {
+            let (json, acked) = row.map_err(db)?;
+            Ok((parse_stored(&json)?, acked))
+        })
+        .collect()
+    }
+
+    /// Newest delivered messages, for the dashboard.
+    pub fn recent_sent(&self, limit: usize) -> Result<Vec<Message>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT message_json FROM sent ORDER BY sent_at DESC LIMIT ?1")
+            .map_err(db)?;
+        let rows = statement
+            .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(db)?;
+        rows.map(|row| parse_stored(&row.map_err(db)?)).collect()
+    }
+
+    /// Queued messages with their attempts and last error, newest first, for the dashboard.
+    pub fn outbox_rows(&self, limit: usize) -> Result<Vec<(Message, u32, Option<String>)>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT message_json, attempts, last_error FROM outbox ORDER BY created_at DESC LIMIT ?1")
+            .map_err(db)?;
+        let rows = statement
+            .query_map([limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(db)?;
+        rows.map(|row| {
+            let (json, attempts, error) = row.map_err(db)?;
+            Ok((parse_stored(&json)?, attempts as u32, error))
+        })
+        .collect()
+    }
 }
