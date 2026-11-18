@@ -383,11 +383,13 @@
       <div class="tabs">
         <button type="button" class="tab is-active" data-filter="received">Received <span id="count-received" class="tab-count">0</span></button>
         <button type="button" class="tab" data-filter="waiting">Waiting <span id="count-waiting" class="tab-count">0</span></button>
+        <button type="button" class="tab" data-filter="runs">Runs <span id="count-runs" class="tab-count">0</span></button>
         <button type="button" class="tab" data-filter="log">Log</button>
       </div>
       <div id="err" class="alert" hidden></div>
       <div id="received"></div>
       <div id="waiting" hidden></div>
+      <div id="runs" hidden></div>
       <div id="logpanel" hidden><pre id="log"></pre></div>
     </div>
   </main>
@@ -471,6 +473,7 @@
   function applyFilter() {
     $('received').hidden = filter !== 'received';
     $('waiting').hidden = filter !== 'waiting';
+    if ($('runs')) $('runs').hidden = filter !== 'runs';
     $('logpanel').hidden = filter !== 'log';
     document.querySelectorAll('[data-filter]').forEach(function (tab) {
       tab.classList.toggle('is-active', tab.getAttribute('data-filter') === filter);
@@ -558,6 +561,7 @@
 
     $('log').textContent = d.log || '(empty)';
     renderHosts(d.hosts);
+    renderRuns(d.runs);
     renderDispatch(d.dispatch);
     applyFilter();
   }
@@ -572,6 +576,20 @@
       row.appendChild(el('span', h.name + ' · ' + h.source + (h.trusted ? ' · pinned' : ' · not pinned')));
       row.title = h.endpoint + ' ' + h.fingerprint;
       node.appendChild(row);
+    });
+  }
+  // Headless runs (read-only): one card per run, newest first.
+  function renderRuns(runs) {
+    var node = $('runs'); if (!node) return;
+    $('count-runs').textContent = String((runs || []).length);
+    if (!runs || !runs.length) { emptyState(node, 'No headless runs yet.'); return; }
+    clear(node);
+    runs.forEach(function (r) {
+      var kind = kindFor(r.state === 'running' ? 'pending' : r.state);
+      var cost = (typeof r.cost_usd === 'number') ? ' · $' + r.cost_usd.toFixed(4) : '';
+      card(node, 'run|' + r.run_id, new Date(r.created_at).toLocaleTimeString(), r.runner + ' · ' + r.tier + (r.project ? ' · ' + r.project : ''),
+        kind, r.state + (r.outcome ? ': ' + r.outcome : ''), r.workspace,
+        'run ' + r.run_id + ' · message ' + r.message_id + cost + (r.reply_id ? ' · reply ' + r.reply_id : ''));
     });
   }
   var dispatchEnabled = null;

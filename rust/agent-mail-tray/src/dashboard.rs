@@ -254,27 +254,7 @@ fn dispatch_state(home: &Path) -> (Option<bool>, Option<String>) {
     }
 }
 
-/// Milliseconds since the epoch as `toISOString()` does: `2026-11-17T08:00:00.000Z`.
-pub fn iso(ms: u64) -> String {
-    let (days, rest) = ((ms / 86_400_000) as i64, ms % 86_400_000);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rest / 3_600_000,
-        rest / 60_000 % 60,
-        rest / 1000 % 60,
-        rest % 1000
-    )
-}
+pub use mail_core::js::iso;
 
 fn version() -> Value {
     json!({ "app": env!("CARGO_PKG_VERSION"), "commit": null, "built": null })
@@ -288,7 +268,7 @@ fn failed_snapshot(message: &str) -> Value {
         "wake": { "mode": "off", "client": "tray" },
         "agents": { "agents": [] }, "agents_error": message,
         "remote": null, "remote_error": message, "local": null, "recent": [], "outbox": [], "log": message,
-        "hosts": [], "mailer": { "running": false }, "dispatch": { "enabled": null },
+        "hosts": [], "runs": [], "mailer": { "running": false }, "dispatch": { "enabled": null },
     })
 }
 
@@ -327,6 +307,9 @@ fn try_snapshot(home: &Path) -> Result<Value, String> {
     let counts = store.counts().map_err(|error| error.to_string())?;
     let hosts = store
         .hosts(now_ms().saturating_sub(HOSTS_WITHIN_MS))
+        .map_err(|error| error.to_string())?;
+    let runs = store
+        .recent_runs(RECENT)
         .map_err(|error| error.to_string())?;
     let running = agent_mail_running(home);
     let (dispatch, policy_error) = dispatch_state(home);
@@ -424,6 +407,7 @@ fn try_snapshot(home: &Path) -> Result<Value, String> {
         })).collect::<Vec<_>>(),
         "log": log.join("\n"),
         "hosts": hosts,
+        "runs": runs,
         "mailer": { "running": running },
         "dispatch": { "enabled": dispatch, "policy_error": policy_error },
     }))

@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mail_core::envelope::{AgentMeta, Envelope, ENVELOPE_V1_1, ENVELOPE_V1_2};
+use mail_core::envelope::{AgentMeta, Envelope};
 use mail_core::outbox::Delivery;
 use mail_core::send::{local_origin, reply, submit, ReplyRequest, SendError, SendRequest};
 use mail_core::store::Store;
@@ -127,15 +127,7 @@ fn to_value(delivery: &Delivery) -> Value {
 
 /// Asks the mailer which envelope a pinned peer accepts. `None` when no mailer answers.
 pub fn envelope_via_mailer(home: &Path, fp: &str) -> Option<Envelope> {
-    match ipc::request(home, &format!("envelope {fp}"), Duration::from_secs(6))
-        .ok()?
-        .as_str()
-    {
-        reply if reply == ENVELOPE_V1_2 => Some(Envelope::V1_2),
-        reply if reply == ENVELOPE_V1_1 => Some(Envelope::V1_1),
-        "agent-mail/1" => Some(Envelope::V1_0),
-        _ => None,
-    }
+    ipc::envelope(home, fp)
 }
 
 /// Whether a mailer answers for this home.

@@ -61,6 +61,7 @@ dependencies = [
 name = "agent-mail-tray"
 version = "0.1.0"
 dependencies = [
+ "agent-maild",
  "bytes",
  "clap",
  "http-body-util",

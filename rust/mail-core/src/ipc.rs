@@ -83,3 +83,18 @@ fn read_line(reader: impl std::io::Read) -> std::io::Result<String> {
 pub fn poke(home: &Path) -> bool {
     request(home, "poke", Duration::from_secs(2)).is_ok_and(|reply| reply == "ok")
 }
+
+/// Which envelope a pinned peer accepts, as the mailer probed it (`envelope <fp>`). `None` when no
+/// mailer answers, which callers treat as "can't confirm".
+pub fn envelope(home: &Path, fp: &str) -> Option<crate::envelope::Envelope> {
+    use crate::envelope::{Envelope, ENVELOPE_V1_1, ENVELOPE_V1_2};
+    match request(home, &format!("envelope {fp}"), Duration::from_secs(6))
+        .ok()?
+        .as_str()
+    {
+        reply if reply == ENVELOPE_V1_2 => Some(Envelope::V1_2),
+        reply if reply == ENVELOPE_V1_1 => Some(Envelope::V1_1),
+        "agent-mail/1" => Some(Envelope::V1_0),
+        _ => None,
+    }
+}

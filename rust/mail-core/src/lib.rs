@@ -5,6 +5,7 @@
 //! contract; see ADR 0005.
 
 pub mod canonical;
+pub mod dispatch;
 pub mod envelope;
 pub mod error;
 pub mod identity;
@@ -13,6 +14,7 @@ pub mod js;
 pub mod migrate;
 pub mod outbox;
 pub mod policy;
+pub mod runs;
 pub mod send;
 pub mod store;
 pub mod wire;
