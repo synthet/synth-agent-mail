@@ -5,16 +5,14 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use agent_mail::ops::{self, Outcome};
 use clap::{Parser, Subcommand};
 use mail_core::identity::{fingerprint, validate_public, Identity, PublicIdentity};
 use mail_core::migrate::import_json_store;
-use mail_core::outbox::Delivery;
 use mail_core::policy::Policy;
-use mail_core::send::{
-    agent_profile, local_origin, submit, validate_endpoint, SendError, SendRequest,
-};
+use mail_core::send::{agent_profile, local_origin, validate_endpoint, SendRequest};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, js};
 use serde_json::{json, Value};
@@ -117,6 +115,19 @@ enum Command {
         #[command(subcommand)]
         action: PolicyAction,
     },
+    /// Serve the MCP tools on stdio (for mcp.json). Never opens a network socket.
+    Mcp {
+        /// Harness name sent as agent metadata (e.g. claude-code).
+        #[arg(long)]
+        harness: Option<String>,
+        #[arg(long)]
+        agent_name: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        /// Accepted for TS mcp.json compatibility; the Rust server never listens.
+        #[arg(long, hide = true)]
+        no_listen: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -159,13 +170,19 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
                 &(serde_json::to_string_pretty(&identity)?),
             )?;
             Store::open(home)?;
-            print(&whoami(&identity)?);
+            print(&ops::whoami(
+                &identity,
+                agent_profile(None, None, None, None).as_ref(),
+            )?);
         }
-        Command::Identity => print(&whoami(&Identity::load(home)?)?),
+        Command::Identity => print(&ops::whoami(
+            &Identity::load(home)?,
+            agent_profile(None, None, None, None).as_ref(),
+        )?),
         Command::Discover { since_minutes } => {
             let since = now_ms().saturating_sub(since_minutes * 60_000);
             print(&Store::open(home)?.hosts(since)?);
-            if !mailer_running(home) {
+            if !ops::mailer_running(home) {
                 eprintln!(
                     "agent-maild is not running for this home, so this list is not being refreshed"
                 );
@@ -231,7 +248,16 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
                 project,
                 ..SendRequest::default()
             };
-            return send(home, request, Duration::from_millis(wait_ms));
+            return match ops::send_and_wait(home, request, Duration::from_millis(wait_ms))? {
+                Outcome::Delivered(value) => {
+                    print(&value);
+                    Ok(ExitCode::SUCCESS)
+                }
+                Outcome::Queued(value) => {
+                    print(&value);
+                    Ok(ExitCode::from(2))
+                }
+            };
         }
         Command::Inbox { limit } => print(&Store::open(home)?.inbox(limit)?),
         Command::Ack { message_id, sender } => {
@@ -242,7 +268,7 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
         Command::Status => {
             let counts = Store::open(home)?.counts()?;
             print(
-                &json!({ "pending": counts.pending, "unread": counts.unread, "sent": counts.sent, "mailer_running": mailer_running(home) }),
+                &json!({ "pending": counts.pending, "unread": counts.unread, "sent": counts.sent, "mailer_running": ops::mailer_running(home) }),
             );
         }
         Command::Flush => {
@@ -252,6 +278,17 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
         Command::Migrate { from } => {
             let from = from.unwrap_or_else(|| home.to_path_buf());
             print(&import_json_store(&from, &Store::open(home)?)?);
+        }
+        Command::Mcp {
+            harness,
+            agent_name,
+            model,
+            no_listen: _,
+        } => {
+            let agent = agent_profile(harness, agent_name, model, None);
+            tokio::runtime::Runtime::new()?
+                .block_on(agent_mail::mcp::serve(home.to_path_buf(), agent))
+                .map_err(|error| error.to_string())?;
         }
         Command::Policy {
             action: PolicyAction::Init,
@@ -264,63 +301,6 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
         } => print(&json!({ "ok": true, "policy": Policy::load(home)? })),
     }
     Ok(ExitCode::SUCCESS)
-}
-
-/// Queue, poke, then wait for the mailer's first attempt.
-fn send(home: &Path, request: SendRequest, wait: Duration) -> Result<ExitCode, Failure> {
-    let identity = Identity::load(home)?;
-    let mut store = Store::open(home)?;
-    let queued = match submit(home, &identity, &mut store, request) {
-        Ok(delivery) => delivery,
-        Err(SendError::Refused(reason)) => return Err(format!("send refused: {reason}").into()),
-        Err(SendError::Other(error)) => return Err(error.into()),
-    };
-    let id = match &queued {
-        Delivery::Delivered { .. } => {
-            print(&queued);
-            return Ok(ExitCode::SUCCESS);
-        }
-        Delivery::Queued { message_id, .. } => message_id.clone(),
-    };
-    if !ipc::poke(home) {
-        let mut result = serde_json::to_value(&queued)?;
-        result["error"] =
-            json!("agent-maild is not running for this home; the message stays queued");
-        print(&result);
-        return Ok(ExitCode::from(2));
-    }
-    let started = Instant::now();
-    loop {
-        let state = store.delivery(&id)?.ok_or("queued message vanished")?;
-        match &state {
-            Delivery::Delivered { .. } => {
-                print(&state);
-                return Ok(ExitCode::SUCCESS);
-            }
-            Delivery::Queued { attempts, .. } if *attempts > 0 || started.elapsed() >= wait => {
-                print(&state);
-                return Ok(ExitCode::from(2));
-            }
-            Delivery::Queued { .. } => std::thread::sleep(Duration::from_millis(100)),
-        }
-    }
-}
-
-fn mailer_running(home: &Path) -> bool {
-    ipc::request(home, "status", Duration::from_secs(2)).is_ok_and(|reply| reply.starts_with('{'))
-}
-
-/// TS `whoami()`: public identity, fingerprint, origin and agent metadata.
-fn whoami(identity: &Identity) -> Result<Value, Failure> {
-    let agent = agent_profile(None, None, None, None);
-    Ok(json!({
-        "name": identity.name,
-        "signing_key": identity.signing_key,
-        "encryption_key": identity.encryption_key,
-        "fingerprint": identity.fingerprint()?,
-        "origin": local_origin(),
-        "agent": agent,
-    }))
 }
 
 /// A peer's public.json. The extra fields `identity` prints (`fingerprint`, `origin`, `agent`)

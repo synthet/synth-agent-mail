@@ -13,6 +13,7 @@ pub struct Status {
     pub home: PathBuf,
     pub fingerprint: String,
     pub port: u16,
+    pub outbox: Arc<crate::outbox::Outbox>,
 }
 
 async fn answer(
@@ -48,6 +49,23 @@ async fn answer(
                     "unread": counts.unread, "sent": counts.sent })
                 .to_string(),
                 _ => json!({ "fingerprint": status.fingerprint, "port": status.port }).to_string(),
+            }
+        }
+        request if request.starts_with("envelope ") => {
+            let fp = request["envelope ".len()..].trim();
+            if !mail_core::js::is_fingerprint(fp) {
+                "error".to_owned()
+            } else {
+                match status.outbox.envelope_for(fp).await {
+                    Ok(mail_core::envelope::Envelope::V1_2) => {
+                        mail_core::envelope::ENVELOPE_V1_2.to_owned()
+                    }
+                    Ok(mail_core::envelope::Envelope::V1_1) => {
+                        mail_core::envelope::ENVELOPE_V1_1.to_owned()
+                    }
+                    Ok(mail_core::envelope::Envelope::V1_0) => "agent-mail/1".to_owned(),
+                    Err(_) => "error".to_owned(),
+                }
             }
         }
         _ => "error".to_owned(),
