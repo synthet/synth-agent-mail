@@ -120,6 +120,9 @@ enum Command {
     Service {
         #[command(subcommand)]
         action: TaskAction,
+        /// Mailer TCP port for `service install` (another than 47832 to run beside the TS listener).
+        #[arg(long, default_value_t = 47832, global = true)]
+        port: u16,
     },
     /// Start agent-mail-tray at logon for this home (a per-user task; no admin needed).
     Tray {
@@ -310,7 +313,7 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             let from = from.unwrap_or_else(|| home.to_path_buf());
             print(&import_json_store(&from, &Store::open(home)?)?);
         }
-        Command::Service { action } => print(&task(Program::Mailer, home, action)?),
+        Command::Service { action, port } => print(&task(Program::Mailer { port }, home, action)?),
         Command::Tray { action, port } => print(&task(Program::Tray { port }, home, action)?),
         Command::Mcp {
             harness,

@@ -11,8 +11,8 @@ use std::process::Command;
 use serde_json::{json, Value};
 
 pub enum Program {
-    /// `agent-maild`: always on, receives and delivers.
-    Mailer,
+    /// `agent-maild`: always on, receives and delivers, on this TCP port.
+    Mailer { port: u16 },
     /// `agent-mail-tray`: dashboard and kill switch.
     Tray { port: u16 },
 }
@@ -20,7 +20,7 @@ pub enum Program {
 impl Program {
     fn stem(&self) -> &'static str {
         match self {
-            Program::Mailer => "agent-maild",
+            Program::Mailer { .. } => "agent-maild",
             Program::Tray { .. } => "agent-mail-tray",
         }
     }
@@ -50,8 +50,8 @@ impl Program {
     pub fn arguments(&self, home: &Path) -> Result<String, String> {
         let quoted_home = quoted(home)?;
         Ok(match self {
-            Program::Mailer => format!(
-                "--home {quoted_home} --log {}",
+            Program::Mailer { port } => format!(
+                "--home {quoted_home} --port {port} --log {}",
                 quoted(&home.join("agent-maild.log"))?
             ),
             Program::Tray { port } => format!("--home {quoted_home} --port {port}"),
@@ -133,11 +133,11 @@ fn schtasks(args: &[&str]) -> Result<String, String> {
 }
 
 /// The one-time firewall rules the mailer needs, for an elevated prompt. Printed, never run.
-pub fn firewall_commands(exe: &Path) -> Vec<String> {
+pub fn firewall_commands(exe: &Path, port: u16) -> Vec<String> {
     let program = exe.to_string_lossy();
     vec![
         format!(
-            r#"netsh advfirewall firewall add rule name="agent-maild (TCP 47832)" dir=in action=allow program="{program}" protocol=TCP localport=47832 profile=private"#
+            r#"netsh advfirewall firewall add rule name="agent-maild (TCP {port})" dir=in action=allow program="{program}" protocol=TCP localport={port} profile=private"#
         ),
         format!(
             r#"netsh advfirewall firewall add rule name="agent-maild (UDP 47831)" dir=in action=allow program="{program}" protocol=UDP localport=47831 profile=private"#
@@ -176,10 +176,19 @@ pub fn install(
     }
     let name = program.task_name(&home);
     let arguments = program.arguments(&home)?;
+    // The mailer is a console program. `conhost --headless` runs it without a window, as the TS
+    // AgentMailListener task does; the tray is a GUI program and starts directly.
+    let (command, command_arguments) = match program {
+        Program::Mailer { .. } => (
+            conhost(),
+            format!("--headless {} {arguments}", quoted(&exe)?),
+        ),
+        Program::Tray { .. } => (exe.clone(), arguments.clone()),
+    };
     let xml = task_xml(
         &current_user()?,
-        &exe,
-        &arguments,
+        &command,
+        &command_arguments,
         &format!("agent-mail {} for {}", program.stem(), home.display()),
     );
     let file = std::env::temp_dir().join(format!("agent-mail-task-{}.xml", std::process::id()));
@@ -204,13 +213,20 @@ pub fn install(
     }
     let mut result =
         json!({ "installed": name, "exe": exe, "arguments": arguments, "started": start });
-    if matches!(program, Program::Mailer) {
+    if let Program::Mailer { port } = program {
         result["firewall"] = json!({
             "note": "Run these once in an elevated prompt so other PCs can reach this mailer; they are not run for you.",
-            "commands": firewall_commands(&exe),
+            "commands": firewall_commands(&exe, *port),
         });
     }
     Ok(result)
+}
+
+/// `%SystemRoot%\System32\conhost.exe`.
+fn conhost() -> PathBuf {
+    PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into()))
+        .join("System32")
+        .join("conhost.exe")
 }
 
 pub fn uninstall(program: &Program, home: &Path) -> Result<Value, String> {
@@ -250,12 +266,15 @@ mod tests {
     #[test]
     fn task_names_are_per_home_and_program() {
         let (a, b) = (Path::new("/tmp/home-a"), Path::new("/tmp/home-b"));
-        assert_ne!(Program::Mailer.task_name(a), Program::Mailer.task_name(b));
         assert_ne!(
-            Program::Mailer.task_name(a),
+            Program::Mailer { port: 47832 }.task_name(a),
+            Program::Mailer { port: 47832 }.task_name(b)
+        );
+        assert_ne!(
+            Program::Mailer { port: 47832 }.task_name(a),
             Program::Tray { port: 1 }.task_name(a)
         );
-        assert!(Program::Mailer
+        assert!(Program::Mailer { port: 47832 }
             .task_name(a)
             .starts_with(r"AgentMail\agent-maild-"));
     }
@@ -263,9 +282,9 @@ mod tests {
     #[test]
     fn mailer_logs_to_the_home_and_tray_gets_its_port() {
         let home = Path::new(r"C:\mail home");
-        let mailer = Program::Mailer.arguments(home).unwrap();
+        let mailer = Program::Mailer { port: 47842 }.arguments(home).unwrap();
         assert!(
-            mailer.starts_with(r#"--home "C:\mail home" --log ""#),
+            mailer.starts_with(r#"--home "C:\mail home" --port 47842 --log ""#),
             "{mailer}"
         );
         assert!(mailer.ends_with(r#"agent-maild.log""#), "{mailer}");
@@ -273,7 +292,7 @@ mod tests {
             Program::Tray { port: 8799 }.arguments(home).unwrap(),
             r#"--home "C:\mail home" --port 8799"#
         );
-        assert!(Program::Mailer
+        assert!(Program::Mailer { port: 47832 }
             .arguments(Path::new("C:\\bad\"path"))
             .is_err());
     }
