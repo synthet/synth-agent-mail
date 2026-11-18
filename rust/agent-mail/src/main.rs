@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use agent_mail::install::{self, Program};
 use agent_mail::ops::{self, Outcome};
 use clap::{Parser, Subcommand};
 use mail_core::identity::{fingerprint, validate_public, Identity, PublicIdentity};
@@ -115,6 +116,19 @@ enum Command {
         #[command(subcommand)]
         action: PolicyAction,
     },
+    /// Start agent-maild at logon for this home (a per-user task; no admin needed).
+    Service {
+        #[command(subcommand)]
+        action: TaskAction,
+    },
+    /// Start agent-mail-tray at logon for this home (a per-user task; no admin needed).
+    Tray {
+        #[command(subcommand)]
+        action: TaskAction,
+        /// Dashboard port for `tray install`.
+        #[arg(long, default_value_t = 8788, global = true)]
+        port: u16,
+    },
     /// Serve the MCP tools on stdio (for mcp.json). Never opens a network socket.
     Mcp {
         /// Harness name sent as agent metadata (e.g. claude-code).
@@ -128,6 +142,23 @@ enum Command {
         #[arg(long, hide = true)]
         no_listen: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum TaskAction {
+    /// Register the logon task (replaces an existing one for this home).
+    Install {
+        /// Executable to run; defaults to the one next to agent-mail.
+        #[arg(long)]
+        exe: Option<PathBuf>,
+        /// Also start it now.
+        #[arg(long)]
+        start: bool,
+    },
+    /// Remove the logon task.
+    Uninstall,
+    /// Whether the logon task exists.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -279,6 +310,8 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             let from = from.unwrap_or_else(|| home.to_path_buf());
             print(&import_json_store(&from, &Store::open(home)?)?);
         }
+        Command::Service { action } => print(&task(Program::Mailer, home, action)?),
+        Command::Tray { action, port } => print(&task(Program::Tray { port }, home, action)?),
         Command::Mcp {
             harness,
             agent_name,
@@ -346,4 +379,12 @@ fn write_new(path: &Path, text: &str) -> Result<(), Failure> {
     })?;
     std::io::Write::write_all(&mut file, text.as_bytes())?;
     Ok(())
+}
+
+fn task(program: Program, home: &Path, action: TaskAction) -> Result<Value, Failure> {
+    Ok(match action {
+        TaskAction::Install { exe, start } => install::install(&program, home, exe, start)?,
+        TaskAction::Uninstall => install::uninstall(&program, home)?,
+        TaskAction::Status => install::status(&program, home)?,
+    })
 }

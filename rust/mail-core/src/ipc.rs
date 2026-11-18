@@ -13,17 +13,29 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+/// A short stable key for a home: 16 hex characters of the sha256 of its absolute path (lowercased
+/// on Windows, where paths are case-insensitive). Names the pipe, the tray's mutex and the logon
+/// tasks, so two homes on one PC never collide.
+pub fn home_key(home: &Path) -> String {
+    let absolute = std::path::absolute(home).unwrap_or_else(|_| home.to_path_buf());
+    let text = absolute.to_string_lossy();
+    let key = if cfg!(windows) {
+        text.to_lowercase()
+    } else {
+        text.into_owned()
+    };
+    hex::encode(Sha256::digest(key.as_bytes()))[..16].to_owned()
+}
+
 /// The channel name for a home: `\\.\pipe\agent-mail-<hash>` on Windows, `<home>/agent-maild.sock`
 /// elsewhere.
 pub fn endpoint(home: &Path) -> PathBuf {
-    let absolute = std::path::absolute(home).unwrap_or_else(|_| home.to_path_buf());
     if cfg!(windows) {
-        // Windows paths are case-insensitive, so the hash is too.
-        let key = absolute.to_string_lossy().to_lowercase();
-        let hash = hex::encode(Sha256::digest(key.as_bytes()));
-        PathBuf::from(format!(r"\\.\pipe\agent-mail-{}", &hash[..16]))
+        PathBuf::from(format!(r"\\.\pipe\agent-mail-{}", home_key(home)))
     } else {
-        absolute.join("agent-maild.sock")
+        std::path::absolute(home)
+            .unwrap_or_else(|_| home.to_path_buf())
+            .join("agent-maild.sock")
     }
 }
 

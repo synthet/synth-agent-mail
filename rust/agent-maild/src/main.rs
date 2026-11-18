@@ -39,6 +39,10 @@ struct Args {
     /// Port probed for hosts.json entries without one, and for Tailscale peers.
     #[arg(long, default_value_t = agent_maild::DEFAULT_PORT)]
     peer_port: u16,
+    /// Write the log to this file instead of the console, and detach from the console. Used by the
+    /// logon task, so no window stays open. A file over 1 MB is moved to <file>.old first.
+    #[arg(long)]
+    log: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -53,6 +57,9 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(path) = &args.log {
+        log_to_file(path)?;
+    }
     let discovery = (!args.no_discovery).then_some(Discovery {
         port: args.discovery_port,
         group: args.discovery_group,
@@ -74,4 +81,31 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
     );
     tokio::signal::ctrl_c().await?;
     Ok(())
+}
+
+/// Sends stderr (every `eprintln!`) to `path` and drops the console window.
+#[cfg(windows)]
+fn log_to_file(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::System::Console::{FreeConsole, SetStdHandle, STD_ERROR_HANDLE};
+    if std::fs::metadata(path).is_ok_and(|meta| meta.len() > 1_000_000) {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    // Rust's stderr looks the handle up on every write, so swapping it redirects eprintln!.
+    unsafe {
+        FreeConsole();
+        SetStdHandle(STD_ERROR_HANDLE, file.into_raw_handle() as _);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn log_to_file(_path: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "--log is only supported on Windows; redirect stderr instead",
+    ))
 }
