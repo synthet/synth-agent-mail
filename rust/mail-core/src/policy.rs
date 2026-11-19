@@ -29,6 +29,12 @@ pub struct Policy {
     pub auto_answer_types: Vec<String>,
     #[serde(default = "empty_object")]
     pub dispatch: Value,
+    /// ADR 0005: project tag -> folder a headless run may use, and at what tier.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub workspaces: std::collections::BTreeMap<String, crate::dispatch::WorkspacePolicy>,
+    /// The folder for mail whose tag matches no `workspaces` key; without it such mail isn't run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_workspace: Option<crate::dispatch::WorkspacePolicy>,
 }
 
 fn empty_object() -> Value {
@@ -48,7 +54,15 @@ impl Policy {
                 "limits": { "concurrency": 1, "per_peer_per_minute": 2, "timeout_ms": 60000, "budget_usd": 0.25 },
                 "peers": {}
             }),
+            workspaces: Default::default(),
+            default_workspace: None,
         }
+    }
+
+    /// The typed `dispatch` section. `load` already checked it, so this only fails for a policy
+    /// built by hand.
+    pub fn dispatch_policy(&self) -> std::result::Result<crate::dispatch::DispatchPolicy, String> {
+        crate::dispatch::DispatchPolicy::parse(&self.dispatch)
     }
 
     pub fn path(home: &Path) -> PathBuf {
@@ -94,6 +108,20 @@ impl Policy {
         }
         if !self.dispatch.is_object() {
             return Err(invalid("dispatch", "must be an object"));
+        }
+        crate::dispatch::DispatchPolicy::parse(&self.dispatch)
+            .map_err(|error| invalid("dispatch", error))?;
+        for (tag, workspace) in self.workspaces.iter().map(|(t, w)| (t.as_str(), w)).chain(
+            self.default_workspace
+                .iter()
+                .map(|w| ("default_workspace", w)),
+        ) {
+            if !workspace.path.is_absolute() {
+                return Err(invalid(
+                    "workspaces",
+                    format!("{tag}: path must be absolute"),
+                ));
+            }
         }
         Ok(())
     }

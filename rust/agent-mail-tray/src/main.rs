@@ -1,6 +1,7 @@
 //! `agent-mail-tray`: the Windows tray icon and the loopback dashboard (ADR 0005).
 //!
-//! One instance per home (a named mutex); starting it again opens the dashboard. The menu opens the
+//! One instance per home (a named mutex); starting it again opens the dashboard. It also runs the
+//! consumer that handles received mail (off until `dispatch.enabled`). The menu opens the
 //! dashboard, shows whether `agent-maild` is running for this home and can start it, toggles the
 //! dispatch kill switch, and quits. Elsewhere, or with `--no-tray`, only the dashboard runs.
 
@@ -66,6 +67,12 @@ fn run(args: Args) -> Result<(), Failure> {
                 args.port
             )
         })?;
+    // The consumer does nothing until policy.json turns dispatch on; the mutex above keeps it to
+    // one per home.
+    let _consumer = agent_mail_tray::consumer::spawn(
+        args.home.clone(),
+        agent_mail_tray::consumer::default_runners(),
+    );
     #[cfg(windows)]
     if !args.no_tray {
         return win::tray(&args, port);

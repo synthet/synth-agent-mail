@@ -30,5 +30,7 @@ tray-icon = "=0.26.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell"] }
 
 [dev-dependencies]
+agent-maild = { path = "../agent-maild" }
 reqwest = { version = "0.12", default-features = false }
 tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

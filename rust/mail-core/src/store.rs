@@ -16,14 +16,43 @@ use crate::error::{invalid, Error, Result};
 use crate::identity::{fingerprint, validate_public, PublicIdentity};
 
 pub const DB_FILE: &str = "mail.db";
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Applied in order to bring an older `mail.db` up to `SCHEMA_VERSION`.
-const MIGRATIONS: &[(i64, &str)] = &[(
-    2,
-    "ALTER TABLE outbox ADD COLUMN downgraded INTEGER NOT NULL DEFAULT 0;
-     ALTER TABLE sent ADD COLUMN delivery_json TEXT;",
-)];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (
+        2,
+        "ALTER TABLE outbox ADD COLUMN downgraded INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE sent ADD COLUMN delivery_json TEXT;",
+    ),
+    (
+        3,
+        "CREATE TABLE IF NOT EXISTS runs (
+           run_id          TEXT PRIMARY KEY,
+           sender          TEXT NOT NULL,
+           message_id      TEXT NOT NULL,
+           conversation_id TEXT NOT NULL,
+           project         TEXT,
+           workspace       TEXT NOT NULL,
+           tier            TEXT NOT NULL,
+           runner          TEXT NOT NULL,
+           state           TEXT NOT NULL,
+           outcome         TEXT,
+           cost_usd        REAL,
+           reply_id        TEXT,
+           created_at      INTEGER NOT NULL,
+           finished_at     INTEGER
+         );
+         CREATE INDEX IF NOT EXISTS runs_created ON runs (created_at);
+         CREATE TABLE IF NOT EXISTS consumer_seen (
+           sender  TEXT NOT NULL,
+           id      TEXT NOT NULL,
+           seen_at INTEGER NOT NULL,
+           PRIMARY KEY (sender, id)
+         );
+         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    ),
+];
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS contacts (
