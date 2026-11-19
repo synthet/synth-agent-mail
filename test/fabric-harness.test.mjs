@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -15,7 +15,7 @@ test("harness install is idempotent and refuses user-global config", (t) => {
   assert.equal(first.wrote.includes(".cursor/hooks.json"), true);
   assert.equal(second.skipped.length, 0);
   assert.equal(readFileSync(join(dir, ".cursor/hooks.json"), "utf8"), readFileSync(join(dir, ".cursor/hooks.json"), "utf8"));
-  assert.equal(readFileSync(join(dir, ".agents/skills/agent-mailbox/SKILL.md"), "utf8").includes("untrusted"), true);
+  assert.equal(existsSync(join(dir, ".agents/skills/agent-mailbox/SKILL.md")), false);
   assert.equal(inspectHarness(dir).installed, true);
   const removed = uninstallHarness(dir);
   assert.equal(removed.removed.includes(".cursor/hooks.json"), true);
@@ -41,12 +41,14 @@ test("digest hook exits 0 and does not print a malicious body", (t) => {
   assert.equal(again.stdout, missing.stdout);
 });
 
-test("the installed agent-mailbox skill matches the authored .claude skill", (t) => {
+test("harness install writes no project agent-mailbox skill: it is a user-level library skill", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "fabric-harness-skill-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  installHarness(dir, "codex");
-  const installed = readFileSync(join(dir, ".agents/skills/agent-mailbox/SKILL.md"), "utf8").replace(/\r\n/g, "\n");
-  const authored = readFileSync(new URL("../.claude/skills/agent-mailbox/SKILL.md", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  assert.equal(installed, authored);
-  for (const tool of ["mailbox_list_sessions", "reply_to_message", "harness_session_id"]) assert.ok(installed.includes(tool), tool);
+  for (const harness of ["claude", "codex", "cursor", "agy"]) {
+    const { wrote } = installHarness(dir, harness);
+    assert.equal(wrote.some((file) => file.includes("skills/agent-mailbox")), false, harness);
+  }
+  assert.equal(existsSync(join(dir, ".agents/skills/agent-mailbox")), false);
+  assert.equal(existsSync(new URL("../.claude/skills/agent-mailbox", import.meta.url)), false);
+  assert.equal(readFileSync(join(dir, "CLAUDE.agent-mailbox.md"), "utf8").includes("agent-mailbox skill"), true);
 });
