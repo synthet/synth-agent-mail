@@ -99,6 +99,38 @@ export function unseal(identity: Identity, input: unknown, trusted: (id: string)
   return message;
 }
 
+const dataSchema = z.object({
+  protocol: z.string().max(80), identity: publicIdentitySchema, recipient: z.string().length(64), timestamp: z.number(),
+  nonce: z.string().uuid(), ephemeral: z.string().max(300), iv: z.string().max(32), tag: z.string().max(32), ciphertext: z.string().max(140_000),
+}).strict();
+
+/** Encrypt arbitrary JSON to `recipient` and sign the envelope, binding it to `protocol` and `nonce`. */
+export function sealData(identity: Identity, recipient: PublicIdentity, protocol: string, nonce: string, data: unknown): Packet {
+  const ephemeral = generateKeyPairSync("x25519");
+  const privateKey = ephemeral.privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key(privateKey, recipient.encryption_key, fingerprint(recipient)), iv);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(data), "utf8"), cipher.final()]);
+  const payload = JSON.stringify({
+    protocol, identity: publicIdentity(identity), recipient: fingerprint(recipient), timestamp: Date.now(), nonce,
+    ephemeral: ephemeral.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64"),
+  });
+  return { payload, signature: signed(identity, payload) };
+}
+
+/** Open a sealData packet from exactly `sender`, for this identity, with the expected protocol and nonce. */
+export function openData(identity: Identity, sender: PublicIdentity, protocol: string, nonce: string, input: unknown): unknown {
+  const packet = packetSchema.parse(input);
+  const wire = dataSchema.parse(JSON.parse(packet.payload));
+  if (fingerprint(wire.identity) !== fingerprint(sender) || !verified(sender, packet.payload, packet.signature)) throw new Error("Untrusted sender or invalid signature");
+  if (wire.protocol !== protocol || wire.nonce !== nonce || wire.recipient !== fingerprint(identity)) throw new Error("Unexpected packet");
+  if (Math.abs(Date.now() - wire.timestamp) > 300_000) throw new Error("Expired packet");
+  const decipher = createDecipheriv("aes-256-gcm", key(identity.encryption_private, wire.ephemeral, wire.recipient), Buffer.from(wire.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(wire.tag, "base64"));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(wire.ciphertext, "base64")), decipher.final()]).toString("utf8"));
+}
+
 export function receipt(identity: Identity, message: PeerMessage): Packet {
   const payload = receiptPayload(message);
   return { payload, signature: signed(identity, payload) };

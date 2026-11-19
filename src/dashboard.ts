@@ -252,6 +252,7 @@ export const dashboardHtml = `<!doctype html>
     font-size: 11px;
     color: var(--color-text-secondary);
     overflow-wrap: anywhere;
+    white-space: pre-line;
   }
   .run-desc summary { cursor: pointer; }
   .run-foot { font-size: 12px; color: var(--color-text-muted); }
@@ -383,11 +384,13 @@ export const dashboardHtml = `<!doctype html>
       <div class="tabs">
         <button type="button" class="tab is-active" data-filter="received">Received <span id="count-received" class="tab-count">0</span></button>
         <button type="button" class="tab" data-filter="waiting">Waiting <span id="count-waiting" class="tab-count">0</span></button>
+        <button type="button" class="tab" data-filter="peers">Peers <span id="count-peers" class="tab-count">0</span></button>
         <button type="button" class="tab" data-filter="log">Log</button>
       </div>
       <div id="err" class="alert" hidden></div>
       <div id="received"></div>
       <div id="waiting" hidden></div>
+      <div id="peers" hidden></div>
       <div id="logpanel" hidden><pre id="log"></pre></div>
     </div>
   </main>
@@ -471,6 +474,7 @@ export const dashboardHtml = `<!doctype html>
   function applyFilter() {
     $('received').hidden = filter !== 'received';
     $('waiting').hidden = filter !== 'waiting';
+    $('peers').hidden = filter !== 'peers';
     $('logpanel').hidden = filter !== 'log';
     document.querySelectorAll('[data-filter]').forEach(function (tab) {
       tab.classList.toggle('is-active', tab.getAttribute('data-filter') === filter);
@@ -570,7 +574,50 @@ export const dashboardHtml = `<!doctype html>
         syncLive(true);
       });
   }
-  function schedule() { clearInterval(timer); if (!paused) timer = setInterval(load, 5000); }
+  // Peers on each dashboard: metadata only (counts, names, times, ids), fetched by this PC's server.
+  var peerStatus = { ok: 'success', unsupported: 'muted', 'no-endpoint': 'muted', refused: 'danger', invalid: 'danger', offline: 'danger' };
+  var peerNote = {
+    unsupported: 'Its build has no peer dashboard yet.',
+    refused: 'It does not trust this PC, or this PC is not pinned there.',
+    offline: 'No answer from its peer port.',
+    invalid: 'Its answer did not verify.',
+    'no-endpoint': 'No address stored for this peer.'
+  };
+  function renderPeers(data) {
+    var node = $('peers');
+    var peers = (data && data.peers) || [];
+    $('count-peers').textContent = String(peers.filter(function (p) { return p.status === 'ok'; }).length) + '/' + peers.length;
+    if (!peers.length) { emptyState(node, data && data.error ? 'Peers unavailable: ' + data.error : 'No pinned peers.'); return; }
+    clear(node);
+    peers.forEach(function (p) {
+      var m = p.meta;
+      var desc = '';
+      var foot = p.fingerprint + (p.endpoint ? ' · ' + p.endpoint : '');
+      if (m) {
+        var c = m.counts || {};
+        desc = c.unread + ' unread · ' + c.stored + ' stored · ' + c.sent + ' sent · ' + c.queued + ' queued' + (m.journal ? ' · ' + c.journal_messages + ' journal' : '');
+        var agents = (m.agents || []).map(function (a) { return a.id; });
+        if (agents.length) desc += '\\nAgents: ' + agents.join(', ');
+        (m.recent || []).slice(0, 8).forEach(function (r) {
+          desc += '\\n' + new Date(r.at).toLocaleString() + ' · ' + r.type + ' · ' + r.peer + ' · ' + r.status;
+        });
+        foot += ' · updated ' + new Date(m.generated_at).toLocaleTimeString();
+      } else {
+        desc = peerNote[p.status] || '';
+      }
+      card(node, ['p', p.fingerprint].join('|'), p.status === 'ok' ? 'live' : p.status, p.name, peerStatus[p.status] || 'muted', p.status, desc, foot);
+    });
+  }
+  function loadPeers() {
+    fetch('/api/peers', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(renderPeers)
+      .catch(function (e) { renderPeers({ peers: [], error: e.message }); });
+  }
+  // One timer: the local view every 5 s, peers every third tick, since each peer refresh asks other PCs.
+  var ticks = 0;
+  function tick() { load(); ticks += 1; if (ticks % 3 === 0) loadPeers(); }
+  function schedule() { clearInterval(timer); if (!paused) timer = setInterval(tick, 5000); }
   $('toggle').addEventListener('click', function () {
     paused = !paused; $('toggle').textContent = paused ? 'Resume' : 'Pause'; syncLive(false); schedule(); if (!paused) load();
   });
@@ -580,7 +627,7 @@ export const dashboardHtml = `<!doctype html>
     filter = button.getAttribute('data-filter');
     applyFilter();
   });
-  load(); schedule();
+  load(); loadPeers(); schedule();
 })();
 </script>
 </body>

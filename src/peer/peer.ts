@@ -7,6 +7,18 @@ import { fingerprint, publicIdentity, type Identity } from "./identity.js";
 import { agentProfile, localOrigin, type AgentDefaults, type AgentMeta } from "./metadata.js";
 import { PeerStore, validateEndpoint, type Contact } from "./store.js";
 import { ENVELOPE_VERSION, messageSchema, receipt, seal, signMessage, unseal, verifyReceipt, type PeerMessage } from "./wire.js";
+import { answerDashboardRequest, DASHBOARD_PATH, DashboardRequestError, NonceCache } from "./dashboard-peers.js";
+
+async function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req as AsyncIterable<Buffer>) {
+    size += chunk.length;
+    if (size > limit) { req.destroy(); return null; }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 export const peerSendShape = {
   recipient: z.string().min(1).describe("Trusted name or full public-key fingerprint"),
@@ -81,6 +93,7 @@ export class Peer {
   readonly store: PeerStore;
   /** Per-contact /capabilities answers. Advisory only: never used for trust or for saving an endpoint. */
   private readonly capabilities = new Map<string, { at: number; accepts: boolean }>();
+  private readonly dashboardNonces = new NonceCache();
   constructor(readonly identity: Identity, dir: string, readonly discoveryOptions: DiscoveryOptions = {}, readonly agent: AgentDefaults = {}) { this.store = new PeerStore(dir); }
   whoami() {
     return { ...publicIdentity(this.identity), fingerprint: fingerprint(this.identity), origin: localOrigin(), agent: agentProfile(this.agent) ?? null };
@@ -288,6 +301,17 @@ export class Peer {
         // Unsigned on purpose: a forged answer can only make a sender include fields this receiver
         // then rejects, which leaves the message queued. Older builds answer 404.
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ envelope: [ENVELOPE_VERSION] }));
+        return;
+      }
+      if (req.method === "POST" && req.url === DASHBOARD_PATH) {
+        try {
+          const body = await readBody(req, 8_000);
+          if (body === null) { res.writeHead(413).end(); return; }
+          const answer = answerDashboardRequest(this.identity, this.store.dir, (id) => this.store.get<Contact>("contacts", id)?.identity, JSON.parse(body), this.dashboardNonces);
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(answer));
+        } catch (error) {
+          res.writeHead(error instanceof DashboardRequestError ? error.status : 400).end();
+        }
         return;
       }
       if (req.method !== "POST" || req.url !== "/message") { res.writeHead(404).end(); return; }

@@ -36,6 +36,8 @@ Use a different `--home` when two peers share one OS user. Only one process shou
 
 `run.bat` installs what is missing, builds, restarts the tray app, and exits. The app has no console or main window. It serves the dashboard at http://127.0.0.1:8788/dashboard, which reads this PC's `~/.agent-mail` store: `journal.db` when present, otherwise the JSON peer folders. It also receives mail unless something on this PC already holds TCP `47832`. In that case it leaves that receiver running, and **Quit** stops only the dashboard.
 
+The dashboard answers only on this PC. Its **Peers** tab shows each pinned peer's state: counts, agent names, times, statuses and conversation ids, never message text. This PC's dashboard server asks each peer for it at `POST /dashboard/meta` on the peer port. The request is signed with this PC's peer key and can't be replayed, and only a peer that has pinned this PC answers. The answer is encrypted to this PC. A peer whose build lacks the endpoint shows as `unsupported`.
+
 Click the tray icon to open the dashboard. Right-click it and choose **Quit** to stop. Starting the app while it is running opens the dashboard. Logs are in `%LOCALAPPDATA%\Agent Mailbox\agent-mailbox.log`.
 
 To add a desktop shortcut and start the app at logon, run `scripts\install-shortcut.ps1` once. Turn off the logon start under **Startup apps** in Task Manager. Run `run.bat` again after changing code.
