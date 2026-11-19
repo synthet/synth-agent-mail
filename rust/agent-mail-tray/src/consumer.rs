@@ -22,7 +22,7 @@ use mail_core::dispatch::{
 use mail_core::envelope::{AgentMeta, Message};
 use mail_core::outbox::Delivery;
 use mail_core::policy::Policy;
-use mail_core::runs::Run;
+use mail_core::runs::{new_run_token, Run};
 use mail_core::send::{new_uuid, reply, ReplyRequest, SendError};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, Identity};
@@ -301,6 +301,9 @@ fn run_and_reply(
         created_at: now_ms(),
         finished_at: None,
     })?;
+    // AC-15: only this run's agent gets the token, in its environment; mail.db keeps the hash.
+    let run_token = new_run_token();
+    store.bind_run_token(&run_id, &run_token)?;
     if !workspace.is_dir() {
         store.finish_run(&run_id, "failed", "no_workspace_folder", None, None)?;
         return Ok((
@@ -314,6 +317,7 @@ fn run_and_reply(
         workspace,
         prompt,
         reply_file: reply_file.clone(),
+        run_token,
         timeout: Duration::from_millis(dispatch.limits.timeout_ms),
         budget_usd: dispatch.limits.budget_usd,
         model,

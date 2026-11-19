@@ -1,14 +1,53 @@
-//! The tray consumer's bookkeeping in `mail.db` (schema v3): which inbox messages it has handled,
+//! The tray consumer's bookkeeping in `mail.db` (schema v3, run tokens v4): which inbox messages it has handled,
 //! the one-time backlog marker, and one row per headless run.
 
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 
 use crate::envelope::{Envelope, Message};
-use crate::error::Result;
+use crate::error::{invalid, Result};
 use crate::store::{db, now_ms, Store};
 
 const STARTED_KEY: &str = "consumer_started";
+
+/// The message a run answers, once its token has been checked (AC-15).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunMessage {
+    pub sender: String,
+    pub message_id: String,
+}
+
+/// Why a run-bound call was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunRefusal {
+    UnknownRun,
+    WrongToken,
+    NotRunning,
+    AlreadyReplied,
+}
+
+impl std::fmt::Display for RunRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            RunRefusal::UnknownRun => "reply_refused: unknown run",
+            RunRefusal::WrongToken => "reply_refused: wrong run token",
+            RunRefusal::NotRunning => "reply_refused: the run has finished",
+            RunRefusal::AlreadyReplied => "reply_refused: this run already replied",
+        })
+    }
+}
+
+/// A fresh run token: 32 random bytes, hex. Only its SHA-256 is stored.
+pub fn new_run_token() -> String {
+    let mut bytes = [0u8; 32];
+    rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, &mut bytes);
+    hex::encode(bytes)
+}
+
+fn token_hash(token: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(token.as_bytes()))
+}
 
 /// One headless run, as the dashboard shows it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -129,6 +168,85 @@ impl Store {
                 "UPDATE runs SET state = ?2, outcome = ?3, cost_usd = ?4, reply_id = COALESCE(?5, reply_id), finished_at = ?6
                  WHERE run_id = ?1",
                 params![run_id, state, outcome, cost_usd, reply_id, now_ms() as i64],
+            )
+            .map_err(db)?;
+        Ok(())
+    }
+
+    /// Records the SHA-256 of the token handed to a run in `AGENT_MAIL_RUN_TOKEN`.
+    pub fn bind_run_token(&self, run_id: &str, token: &str) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE runs SET token_sha256 = ?2 WHERE run_id = ?1",
+                params![run_id, token_hash(token)],
+            )
+            .map_err(db)?;
+        if changed == 0 {
+            return Err(invalid("run_id", "unknown run"));
+        }
+        Ok(())
+    }
+
+    /// Checks a run token without using the run's reply. A run-bound call must still be running.
+    pub fn check_run(
+        &self,
+        run_id: &str,
+        token: &str,
+    ) -> Result<std::result::Result<RunMessage, RunRefusal>> {
+        let row: Option<(String, String, String, Option<String>)> = self
+            .conn
+            .query_row(
+                "SELECT sender, message_id, state, token_sha256 FROM runs WHERE run_id = ?1",
+                [run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(db)?;
+        let Some((sender, message_id, state, stored)) = row else {
+            return Ok(Err(RunRefusal::UnknownRun));
+        };
+        if token.is_empty() || stored.as_deref() != Some(token_hash(token).as_str()) {
+            return Ok(Err(RunRefusal::WrongToken));
+        }
+        if state != "running" {
+            return Ok(Err(RunRefusal::NotRunning));
+        }
+        Ok(Ok(RunMessage { sender, message_id }))
+    }
+
+    /// Takes the run's one reply for `reply_id`, after checking the token. A second call, or a
+    /// call racing the first, is refused. `release_run_reply` gives the slot back if sending fails.
+    pub fn claim_run_reply(
+        &self,
+        run_id: &str,
+        token: &str,
+        reply_id: &str,
+    ) -> Result<std::result::Result<RunMessage, RunRefusal>> {
+        let message = match self.check_run(run_id, token)? {
+            Ok(message) => message,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let claimed = self
+            .conn
+            .execute(
+                "UPDATE runs SET reply_id = ?2 WHERE run_id = ?1 AND reply_id IS NULL AND state = 'running'",
+                params![run_id, reply_id],
+            )
+            .map_err(db)?;
+        Ok(if claimed == 1 {
+            Ok(message)
+        } else {
+            Err(RunRefusal::AlreadyReplied)
+        })
+    }
+
+    /// Gives back a reply slot that `claim_run_reply` took, when the reply couldn't be queued.
+    pub fn release_run_reply(&self, run_id: &str, reply_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE runs SET reply_id = NULL WHERE run_id = ?1 AND reply_id = ?2",
+                params![run_id, reply_id],
             )
             .map_err(db)?;
         Ok(())

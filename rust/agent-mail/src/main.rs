@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use agent_mail::install::{self, Program};
 use agent_mail::ops::{self, Outcome};
+use agent_mail::reply::RunContext;
 use clap::{Parser, Subcommand};
 use mail_core::identity::{fingerprint, validate_public, Identity, PublicIdentity};
-use mail_core::migrate::import_json_store;
+use mail_core::migrate::{import_journal, import_json_store};
 use mail_core::policy::Policy;
-use mail_core::send::{agent_profile, local_origin, validate_endpoint, SendRequest};
+use mail_core::send::{agent_profile, local_origin, validate_endpoint, ReplyRequest, SendRequest};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, js};
 use serde_json::{json, Value};
@@ -144,6 +145,34 @@ enum Command {
         /// Accepted for TS mcp.json compatibility; the Rust server never listens.
         #[arg(long, hide = true)]
         no_listen: bool,
+        /// Run mode for a headless run: only the run-bound tools, token from AGENT_MAIL_RUN_TOKEN.
+        #[arg(long, value_name = "RUN_ID")]
+        run: Option<String>,
+    },
+    /// Reply to a received message in its thread. With --run, answer the run's own message
+    /// (token from AGENT_MAIL_RUN_TOKEN, always automatic, once).
+    Reply {
+        /// Fingerprint of the peer that sent the message (not with --run).
+        #[arg(long, required_unless_present = "run", conflicts_with = "run")]
+        sender: Option<String>,
+        /// Id of the received message (not with --run).
+        #[arg(long, required_unless_present = "run", conflicts_with = "run")]
+        message_id: Option<String>,
+        #[arg(long, conflicts_with = "file")]
+        text: Option<String>,
+        /// Read exact UTF-8 text from a file (- for stdin).
+        #[arg(long)]
+        file: Option<String>,
+        /// No human wrote or approved this reply: send it with auto_reply.
+        #[arg(long, conflicts_with = "run")]
+        automatic: bool,
+        /// Reuse on retry to avoid a duplicate reply.
+        #[arg(long, conflicts_with = "run")]
+        reply_id: Option<String>,
+        #[arg(long, value_name = "RUN_ID")]
+        run: Option<String>,
+        #[arg(long, default_value_t = 8000)]
+        wait_ms: u64,
     },
 }
 
@@ -311,7 +340,51 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
         }
         Command::Migrate { from } => {
             let from = from.unwrap_or_else(|| home.to_path_buf());
-            print(&import_json_store(&from, &Store::open(home)?)?);
+            let store = Store::open(home)?;
+            let mut report = serde_json::to_value(import_json_store(&from, &store)?)?;
+            let host = agent_mail::reply::host(&Identity::load(home)?)?;
+            report["journal"] = serde_json::to_value(import_journal(&from, &store, &host)?)?;
+            print(&report);
+        }
+        Command::Reply {
+            sender,
+            message_id,
+            text,
+            file,
+            automatic,
+            reply_id,
+            run,
+            wait_ms,
+        } => {
+            let text = match (text, file) {
+                (Some(text), None) => text,
+                (None, Some(file)) => read_text(&file)?,
+                _ => return Err("Provide exactly one of --text or --file".into()),
+            };
+            let wait = Duration::from_millis(wait_ms);
+            let agent = agent_profile(None, None, None, None);
+            let outcome = match run {
+                Some(run_id) => {
+                    RunContext::from_env(run_id)?.reply_and_wait(home, text, agent, wait)?
+                }
+                None => ops::reply_and_wait(
+                    home,
+                    ReplyRequest {
+                        sender: sender.unwrap_or_default(),
+                        message_id: message_id.unwrap_or_default(),
+                        text,
+                        automatic,
+                        reply_id,
+                        agent,
+                    },
+                    wait,
+                )?,
+            };
+            print(outcome.value());
+            return Ok(match outcome {
+                Outcome::Delivered(_) => ExitCode::SUCCESS,
+                Outcome::Queued(_) => ExitCode::from(2),
+            });
         }
         Command::Service { action, port } => print(&task(Program::Mailer { port }, home, action)?),
         Command::Tray { action, port } => print(&task(Program::Tray { port }, home, action)?),
@@ -320,10 +393,12 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             agent_name,
             model,
             no_listen: _,
+            run,
         } => {
             let agent = agent_profile(harness, agent_name, model, None);
+            let run = run.map(RunContext::from_env).transpose()?;
             tokio::runtime::Runtime::new()?
-                .block_on(agent_mail::mcp::serve(home.to_path_buf(), agent))
+                .block_on(agent_mail::mcp::serve(home.to_path_buf(), agent, run))
                 .map_err(|error| error.to_string())?;
         }
         Command::Policy {

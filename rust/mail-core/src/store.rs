@@ -16,7 +16,7 @@ use crate::error::{invalid, Error, Result};
 use crate::identity::{fingerprint, validate_public, PublicIdentity};
 
 pub const DB_FILE: &str = "mail.db";
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Applied in order to bring an older `mail.db` up to `SCHEMA_VERSION`.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -51,6 +51,54 @@ const MIGRATIONS: &[(i64, &str)] = &[
            PRIMARY KEY (sender, id)
          );
          CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+    ),
+    (
+        // T-7: the run-bound reply token (stored as its SHA-256), and the same-PC sessions,
+        // conversation leases and local messages of the TS journal. Never synced.
+        4,
+        "ALTER TABLE runs ADD COLUMN token_sha256 TEXT;
+         CREATE TABLE IF NOT EXISTS agents (
+           agent_id   TEXT PRIMARY KEY,
+           alias      TEXT NOT NULL UNIQUE,
+           created_at INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS sessions (
+           session_id         TEXT PRIMARY KEY,
+           agent_id           TEXT NOT NULL,
+           harness            TEXT,
+           model              TEXT,
+           harness_session_id TEXT,
+           display_name       TEXT,
+           workspace          TEXT,
+           last_seen          INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS conversation_leases (
+           conversation_id TEXT PRIMARY KEY,
+           session_id      TEXT NOT NULL,
+           lease_until     INTEGER NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS local_messages (
+           message_id      TEXT PRIMARY KEY,
+           thread_id       TEXT NOT NULL,
+           sender_agent    TEXT NOT NULL,
+           sender_session  TEXT NOT NULL,
+           subject         TEXT NOT NULL,
+           body            TEXT NOT NULL,
+           idempotency_key TEXT UNIQUE,
+           created_at      INTEGER NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS local_messages_sender ON local_messages (sender_session, created_at);
+         CREATE TABLE IF NOT EXISTS local_audience (
+           message_id TEXT NOT NULL,
+           agent_id   TEXT NOT NULL,
+           PRIMARY KEY (message_id, agent_id)
+         );
+         CREATE TABLE IF NOT EXISTS local_acks (
+           session_id TEXT NOT NULL,
+           message_id TEXT NOT NULL,
+           acked_at   INTEGER NOT NULL,
+           PRIMARY KEY (session_id, message_id)
+         );",
     ),
 ];
 
