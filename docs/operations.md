@@ -66,6 +66,46 @@ Prerequisites:
 
 To stop it, set `"enabled": false` in the `dispatch` section. That takes effect on the next poll, without restarting the task. To remove it, run `schtasks /Delete /TN "agent-mail dispatch"`. Only one instance runs, through `dispatch.lock`; a lock left by a dead process is replaced.
 
+## Rust cutover (per PC)
+
+This is the T-10 step of [ADR 0005](architecture/0005-rust-mailer-tray-headless.md). It retires the TypeScript stack on one PC after the Rust tools have taken over its hooks and MCP. Each PC does its own cutover. Nobody changes another PC, and `dispatch.enabled` stays as the owner set it.
+
+What is deployed now differs from the ADR's first plan. The Rust stack runs beside the TS one with its own home (`%USERPROFILE%\.agent-mail-rs`) and its own identity. The mailer is on TCP 47842 and the tray on 8796. Peers have pinned the Rust fingerprints at `:47842`. So the cutover moves no ports and changes no keys: it only stops and disables the TS entries. The ADR's "only one process can own 47832" applied to the plan where Rust took over 47832.
+
+| | TypeScript (retired here) | Rust (stays) |
+|---|---|---|
+| Mailer | `node dist\cli.js listen` on 47832, scheduled task `\AgentMailListener` | `agent-maild.exe` on 47842, task `\AgentMail\agent-maild-<id>` |
+| Tray | `dist\AgentMailTray.exe` (`tray-host.js`, 8788), `Agent Mailbox.lnk` in Startup | `agent-mail-tray.exe` on 8796, task `\AgentMail\agent-mail-tray-<id>` |
+| Hooks | `node …\dist\cli.js hook inject\|gate\|ledger`, `digest` | `agent-mail.exe --home <h> hook inject\|gate\|ledger`, `digest` |
+| MCP `agent-mail` | `node …\dist\cli.js mcp` | `agent-mail.exe --home <h> mcp` |
+
+Before you start: T-7 and T-10 are merged, and the Rust binaries in `%LOCALAPPDATA%\Programs\agent-mail-rs` are rebuilt from that commit. To replace a binary, stop its logon task (`Stop-ScheduledTask -TaskPath \AgentMail\ -TaskName <name>`), copy the new `.exe`, then start the task again. `mail.db` moves to schema v4 the first time it is opened.
+
+```powershell
+$bin = Join-Path $env:LOCALAPPDATA 'Programs\agent-mail-rs'; $cli = Join-Path $bin 'agent-mail.exe'
+$h = Join-Path $env:USERPROFILE '.agent-mail-rs'; $ts = Join-Path $env:USERPROFILE '.agent-mail'
+```
+
+1. **Inventory (read-only).** Record who owns 8788, 8796, 47832 and 47842, which scheduled tasks and Startup entries start them, and every hook or MCP entry that runs `dist\cli.js`: `~\.claude\settings*.json`, project `.claude\settings*.json`, `~\.codex\hooks.json`, `~\.codex\config.toml`, and `claude mcp list`.
+2. **Import once.** `& $cli --home $h migrate --from $ts` copies contacts, inbox, acks, outbox, sent, and now also `journal.db` sessions and leases. It never changes `$ts`, and running it again imports nothing new. Then check `& $cli --home $h peers`. Contacts imported from TS carry the peers' TS fingerprints and `:47832` endpoints. Once every peer has cut over, the owner untrusts them.
+3. **Backlog.** The inject hook shows each session its unacked mail, five messages per prompt. Imported mail counts as unacked. Have the owner review `& $cli --home $h inbox` and ack what has been handled before wiring the hooks. Otherwise every new session is shown the old backlog.
+4. **Hooks.** Replace each TS hook command with the Rust one. Keep the same events and add to any hooks that already exist:
+   - `"<bin>\agent-mail.exe" --home "<h>" hook inject --event SessionStart|UserPromptSubmit|Stop --harness claude|codex`
+   - `… hook gate` (PreToolUse) and `… hook ledger` (PostToolUse)
+   - `… digest --session <harness>`
+
+   For a project, `& $cli --home $h harness install --target <project> --harness claude` writes `.claude\agent-mailbox.hooks.json` with these commands, which you then merge into `.claude\settings.json`. `codex` writes `.codex\hooks.json` directly.
+5. **MCP.** Point `agent-mail` at the Rust binary and remove any second `agent-mail-rs` entry. For Claude Code: `claude mcp remove -s user agent-mail; claude mcp add -s user agent-mail -- $cli --home $h mcp --harness claude-code --agent-name claude`. For Codex, edit `[mcp_servers.agent-mail]` in `~\.codex\config.toml`. Restart the sessions so they pick it up.
+6. **Check before stopping TS.** In a fresh session, a test message from a peer must show up through the Rust `hook inject`, and `whoami` must show the Rust fingerprint. Don't stop TS until this passes.
+7. **Stop and disable TS.**
+   - Quit the TS tray: `dist\AgentMailTray.exe --quit`.
+   - Move `Agent Mailbox.lnk` out of the Startup folder into a backup folder; don't delete it.
+   - Run `Disable-ScheduledTask -TaskName AgentMailListener`, then `Stop-ScheduledTask`. Stopping the task can leave its `node` running, so check the process that owns 47832. If its command line is `dist\cli.js listen`, stop that PID.
+   - Leave `$ts` in place.
+8. **Receipts.** Nothing answers on 47832 or 8788. `http://127.0.0.1:47842/capabilities` and `http://127.0.0.1:8796/dashboard` answer. `claude mcp get agent-mail` shows `agent-mail.exe`. After a logon, only the Rust tasks start.
+
+**Rollback:** re-enable and start `\AgentMailListener`, put `Agent Mailbox.lnk` back, and point the hooks and MCP at `dist\cli.js` again. `migrate` changed nothing in `$ts`, so the TS stack resumes where it stopped. Mail received only by Rust meanwhile stays in `mail.db`.
+
 ## Backup
 
 Copy, while the daemon is stopped:

@@ -49,10 +49,13 @@ version = "0.1.0"
 dependencies = [
  "agent-maild",
  "clap",
+ "hex",
  "mail-core",
+ "regex",
  "rmcp",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
 ]
