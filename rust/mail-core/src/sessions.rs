@@ -401,6 +401,22 @@ impl Store {
             .map_err(db)
     }
 
+    /// TS `conversationLease`: the unexpired lease on a conversation, or `null`.
+    pub fn conversation_lease(&self, conversation_id: &str) -> Result<Value> {
+        let row: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT session_id, lease_until FROM conversation_leases WHERE conversation_id = ?1 AND lease_until > ?2",
+                params![conversation_id, now_ms() as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(db)?;
+        Ok(row.map_or(Value::Null, |(session_id, until)| {
+            json!({ "conversation_id": conversation_id, "session_id": session_id, "lease_until": until })
+        }))
+    }
+
     /// TS `publish` for the direct audience: stores the message for the sender's agent and the
     /// recipient agent. The recipient sees it on its next list, poll or hook; nothing is resumed.
     pub fn publish_local(&mut self, input: &Publish) -> Result<Value> {

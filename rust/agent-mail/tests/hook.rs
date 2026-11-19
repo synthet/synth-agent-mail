@@ -459,3 +459,91 @@ fn harness_install_points_the_hooks_at_this_binary_and_home() {
     );
     assert!(!target.join(".claude/agent-mailbox.hooks.json").exists());
 }
+
+fn bare(args: &[&str], stdin: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agent-mail"))
+        .args(args)
+        .env_remove("AGENT_MAIL_SESSION")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn readers_pointed_at_a_missing_home_fail_and_create_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("typo");
+    let home = missing.to_str().unwrap();
+    let input = json!({ "session_id": "s", "hook_event_name": "UserPromptSubmit" }).to_string();
+    let inject = bare(&["--home", home, "hook", "inject"], &input);
+    assert_eq!(
+        inject.status.code(),
+        Some(0),
+        "a hook never breaks the session"
+    );
+    assert!(String::from_utf8_lossy(&inject.stderr).contains("no agent-mail home"));
+    for args in [
+        vec!["--home", home, "digest", "--session", "s", "--unseen"],
+        vec!["--home", home, "watch", "--session", "s", "--once"],
+    ] {
+        assert_eq!(bare(&args, "").status.code(), Some(1), "{args:?}");
+    }
+    let plain = bare(&["--home", home, "digest", "--session", "s"], "");
+    assert!(String::from_utf8_lossy(&plain.stdout).contains("no agent-mail home"));
+    assert!(!missing.exists(), "nothing was created");
+}
+
+#[test]
+fn the_gate_fails_closed_without_a_home_a_policy_or_a_readable_field() {
+    let send = json!({ "tool_name": "mcp__agent-mail__send_message", "tool_input": { "recipient": "Beta", "text": "hi" } });
+    let no_home = bare(&["hook", "gate"], &send.to_string());
+    assert_eq!(no_home.status.code(), Some(0));
+    let deny: Value = serde_json::from_slice(&no_home.stdout).unwrap();
+    assert_eq!(deny["hookSpecificOutput"]["permissionDecision"], "deny");
+    let other = bare(
+        &["hook", "gate"],
+        &json!({ "tool_name": "Read" }).to_string(),
+    );
+    assert!(other.stdout.is_empty());
+
+    let pc = pc();
+    let gate = |input: &str| {
+        let out = pc.run(&["hook", "gate"], input);
+        assert_eq!(out.status.code(), Some(0));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    std::fs::write(pc.home.join("policy.json"), "{not json").unwrap();
+    assert!(
+        gate(&send.to_string()).contains("deny"),
+        "an invalid policy denies"
+    );
+    policy(&pc.home, json!(["Beta"]));
+    let big = json!({ "tool_name": "mcp__agent-mail__send_message", "tool_input": { "recipient": "Beta", "text": "x".repeat(20000) } });
+    assert!(gate(&big.to_string()).contains("max_bytes"));
+    assert_eq!(gate("{not json"), "", "unreadable stdin names no tool");
+    // A wrong-typed field doesn't drop the rest of the payload.
+    let odd = json!({ "session_id": 5, "tool_name": "mcp__agent-mail__send_message", "tool_input": { "recipient": "Gamma", "text": "hi" } });
+    assert!(gate(&odd.to_string()).contains("deny"));
+}
+
+#[test]
+fn unseen_needs_a_session_and_lease_show_has_the_expiry() {
+    let pc = pc();
+    assert_eq!(pc.run(&["digest", "--unseen"], "").status.code(), Some(1));
+    pc.json(&["register", "--session", "a"], "");
+    pc.json(
+        &["lease", "claim", "--conversation", "c1", "--session", "a"],
+        "",
+    );
+    let shown = pc.json(&["lease", "show", "--conversation", "c1"], "");
+    assert!(shown["lease"]["lease_until"].as_u64().unwrap() > now_ms());
+}

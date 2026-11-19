@@ -62,7 +62,12 @@ fn safe_target(target: &Path) -> Result<PathBuf, String> {
     if !target.is_absolute() {
         return Err("Harness target must be an absolute project directory".into());
     }
-    let root = target.to_path_buf();
+    // Normalized, so `C:\Users\x\.` or `..` can't slip past the checks below.
+    let root = std::path::absolute(target).map_err(|error| error.to_string())?;
+    let root = root
+        .components()
+        .filter(|part| !matches!(part, std::path::Component::CurDir))
+        .collect::<PathBuf>();
     let profile = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from);
@@ -288,5 +293,27 @@ mod tests {
         )
         .is_err());
         assert!(install(dir.path(), "vim", Path::new("a"), Path::new("h")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn the_profile_root_is_refused_however_it_is_spelled() {
+        let Some(profile) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+        else {
+            return;
+        };
+        let profile = PathBuf::from(profile);
+        for target in [
+            profile.clone(),
+            profile.join("."),
+            profile.join("x").join(".."),
+        ] {
+            assert!(safe_target(&target).is_err(), "{}", target.display());
+        }
+        assert!(safe_target(&profile.join(".codex").join("config.toml")).is_err());
     }
 }

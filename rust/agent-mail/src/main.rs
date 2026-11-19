@@ -298,6 +298,17 @@ type Failure = Box<dyn std::error::Error>;
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Some(home) = cli.home else {
+        // PreToolUse treats exit 1 as "no objection", so the send gate denies instead (fails closed).
+        if let Command::Hook { verb, .. } = &cli.command {
+            if verb == "gate" {
+                let mut raw = String::new();
+                let _ = std::io::stdin().read_to_string(&mut raw);
+                if let Some(response) = hook::gate_without_home(&hook::ToolInput::parse(&raw)) {
+                    println!("{response}");
+                }
+                return ExitCode::SUCCESS;
+            }
+        }
         eprintln!("agent-mail: --home is required (the Rust tools never default to the live TS home before cutover)");
         return ExitCode::from(1);
     };
@@ -481,9 +492,7 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             let mut store = Store::open(home)?;
             let session = || session.clone().ok_or("Missing --session");
             match action.as_str() {
-                "show" => print(
-                    &json!({ "lease": store.conversation_holder(&conversation)?.map(|session_id| json!({ "conversation_id": conversation, "session_id": session_id })) }),
-                ),
+                "show" => print(&json!({ "lease": store.conversation_lease(&conversation)? })),
                 "release" => print(&store.release_conversation(&session()?, &conversation)?),
                 _ => {
                     let result = store.lease_conversation(&session()?, &conversation)?;
@@ -516,11 +525,12 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             let session = session.or_else(|| std::env::var("AGENT_MAIL_SESSION").ok());
             if unseen || !mark_seen.is_empty() {
                 let session = session.ok_or("Missing --session")?;
+                let store = Store::open_existing(home)?;
                 let seen = hook::SeenStore::new(home, &session)?;
                 if !mark_seen.is_empty() {
                     print(&json!({ "ok": true, "marked": seen.mark(&mark_seen)? }));
                 } else {
-                    let messages = hook::unseen(&Store::open(home)?, &seen, &session, 20, bodies)
+                    let messages = hook::unseen(&store, &seen, &session, 20, bodies)
                         .map_err(|error| error.to_string())?;
                     print(
                         &json!({ "ok": true, "untrusted": true, "session": session, "messages": messages }),
@@ -528,7 +538,7 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
                 }
             } else {
                 let session = session.unwrap_or_else(|| "cli".into());
-                match Store::open(home).and_then(|store| store.local_digest(&session, 5)) {
+                match Store::open_existing(home).and_then(|store| store.local_digest(&session, 5)) {
                     Ok(digest) => print(&digest),
                     Err(error) => print(
                         &json!({ "ok": true, "untrusted": true, "messages": [], "warning": error.to_string() }),
@@ -552,18 +562,17 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
                 .ok_or("Missing --session")?;
             let interval = Duration::from_millis(interval.max(500));
             let mut last_beat: Option<std::time::Instant> = None;
+            // Opened once: each open takes a short write lock for the schema check.
+            let mut store = Store::open_existing(home)?;
             loop {
-                match Store::open(home)
+                match hook::watch_poll(home, &store, &session, backlog)
                     .map_err(|error| error.to_string())
-                    .and_then(|mut store| {
-                        let lines = hook::watch_poll(home, &store, &session, backlog)
-                            .map_err(|error| error.to_string())?;
+                    .inspect(|_| {
                         // Liveness goes to mail.db, not stdout: under a monitor every line wakes the model.
                         if last_beat.is_none_or(|at| at.elapsed() >= Duration::from_secs(300)) {
                             last_beat = Some(std::time::Instant::now());
                             let _ = store.heartbeat(&session);
                         }
-                        Ok(lines)
                     }) {
                     Ok(lines) => {
                         for line in lines {
@@ -669,23 +678,23 @@ fn run_hook(home: &Path, verb: &str, event: Option<String>, harness: Option<&str
     let raw = raw.trim();
     match verb {
         "gate" => {
-            let input: hook::ToolInput = serde_json::from_str(raw).unwrap_or_default();
+            let input = hook::ToolInput::parse(raw);
             if let Some(response) = hook::gate(&input, home, harness) {
                 println!("{response}");
             }
         }
         "ledger" => {
-            let input: hook::ToolInput = serde_json::from_str(raw).unwrap_or_default();
+            let input = hook::ToolInput::parse(raw);
             if let Err(error) = hook::ledger_hook(&input, home, harness) {
                 eprintln!("agent-mail hook ledger: {error}");
             }
         }
         "inject" => {
-            let input: hook::HookInput = serde_json::from_str(raw).unwrap_or_default();
+            let input = hook::HookInput::parse(raw);
             let event = event
                 .or_else(|| input.hook_event_name.clone())
                 .unwrap_or_default();
-            let response = Store::open(home)
+            let response = Store::open_existing(home)
                 .map_err(|error| error.to_string())
                 .and_then(|store| {
                     hook::inject(&event, &input, home, &store, harness.unwrap_or("hook"))
