@@ -13,16 +13,35 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 /// Everything a runner needs; all of it comes from `policy.json` or the consumer, none from mail.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RunRequest {
     pub run_id: String,
     pub home: PathBuf,
     pub workspace: PathBuf,
     pub prompt: String,
     pub reply_file: PathBuf,
+    /// For the run-bound reply tools (`agent-mail mcp --run`); passed only in the environment.
+    pub run_token: String,
     pub timeout: Duration,
     pub budget_usd: f64,
     pub model: Option<String>,
+}
+
+/// The prompt and run token never appear in debug output.
+impl std::fmt::Debug for RunRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunRequest")
+            .field("run_id", &self.run_id)
+            .field("home", &self.home)
+            .field("workspace", &self.workspace)
+            .field("prompt", &format_args!("<{} bytes>", self.prompt.len()))
+            .field("reply_file", &self.reply_file)
+            .field("run_token", &format_args!("<redacted>"))
+            .field("timeout", &self.timeout)
+            .field("budget_usd", &self.budget_usd)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,6 +125,7 @@ impl Runner for ClaudeRunner {
         command
             .env("AGENT_MAIL_RUN_ID", &request.run_id)
             .env("AGENT_MAIL_REPLY_FILE", &request.reply_file)
+            .env("AGENT_MAIL_RUN_TOKEN", &request.run_token)
             .env("AGENT_MAIL_HOME", &request.home);
         #[cfg(windows)]
         {
@@ -309,6 +329,7 @@ mod tests {
             workspace: PathBuf::from("w"),
             prompt: "secret prompt text".into(),
             reply_file: PathBuf::from("reply.md"),
+            run_token: "token".into(),
             timeout: Duration::from_secs(1),
             budget_usd: 0.25,
             model: None,

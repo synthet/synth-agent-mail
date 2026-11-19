@@ -16,6 +16,7 @@ pub mod outbox;
 pub mod policy;
 pub mod runs;
 pub mod send;
+pub mod sessions;
 pub mod store;
 pub mod wire;
 

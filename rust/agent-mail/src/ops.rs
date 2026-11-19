@@ -90,7 +90,7 @@ pub fn reply_and_wait(
     wait_for_delivery(home, &store, queued, wait)
 }
 
-fn wait_for_delivery(
+pub fn wait_for_delivery(
     home: &Path,
     store: &Store,
     queued: Delivery,
