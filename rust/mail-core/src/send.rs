@@ -310,6 +310,16 @@ mod tests {
 
     /// Alice's home holds a message from Bob and a running run for it, bound to `token`.
     fn run_fixture(token: &str) -> RunFixture {
+        run_fixture_with(token, Some(1), None, now_ms() + 60_000)
+    }
+
+    /// The question carries `hop` and `auto_reply`; the run token works until `deadline`.
+    fn run_fixture_with(
+        token: &str,
+        hop: Option<u8>,
+        auto_reply: Option<bool>,
+        deadline: u64,
+    ) -> RunFixture {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("alice");
         let alice = Identity::generate("alice").unwrap();
@@ -335,8 +345,8 @@ mod tests {
                 ..AgentMeta::default()
             }),
             to_session: None,
-            hop: Some(1),
-            auto_reply: None,
+            hop,
+            auto_reply,
             in_reply_to: None,
             project: None,
             signature: String::new(),
@@ -362,7 +372,7 @@ mod tests {
                 finished_at: None,
             })
             .unwrap();
-        store.bind_run_token("run-1", token).unwrap();
+        store.bind_run_token("run-1", token, deadline).unwrap();
         RunFixture {
             _dir: dir,
             home,
@@ -456,6 +466,89 @@ mod tests {
             .unwrap();
         let error = run_reply(&mut f, "t").unwrap_err().to_string();
         assert!(error.contains("finished"), "{error}");
+    }
+
+    #[test]
+    fn the_run_path_keeps_the_hop_limit_and_never_answers_an_automatic_message() {
+        let mut deep = run_fixture_with("t", Some(MAX_AUTO_HOP), None, now_ms() + 60_000);
+        let error = run_reply(&mut deep, "t").unwrap_err().to_string();
+        assert!(error.contains("hop limit"), "{error}");
+        assert_eq!(
+            deep.store.run_reply("run-1").unwrap(),
+            None,
+            "the slot is given back"
+        );
+        let mut automatic = run_fixture_with("t", Some(1), Some(true), now_ms() + 60_000);
+        let error = run_reply(&mut automatic, "t").unwrap_err().to_string();
+        assert!(error.contains("itself an automatic reply"), "{error}");
+        assert_eq!(automatic.store.counts().unwrap().pending, 0);
+    }
+
+    #[test]
+    fn expired_failed_and_closed_runs_cannot_reply() {
+        let mut expired = run_fixture_with("t", Some(1), None, now_ms().saturating_sub(1));
+        let error = run_reply(&mut expired, "t").unwrap_err().to_string();
+        assert!(error.contains("time limit"), "{error}");
+
+        let mut failed = run_fixture("t");
+        failed
+            .store
+            .finish_run("run-1", "failed", "timeout", None, None)
+            .unwrap();
+        assert!(run_reply(&mut failed, "t")
+            .unwrap_err()
+            .to_string()
+            .contains("finished"));
+
+        // The consumer closes the window before picking its own reply: a late call is refused.
+        let mut closed = run_fixture("t");
+        assert!(closed.store.close_run("run-1").unwrap());
+        assert!(
+            !closed.store.close_run("run-1").unwrap(),
+            "only a running run closes"
+        );
+        assert!(run_reply(&mut closed, "t")
+            .unwrap_err()
+            .to_string()
+            .contains("finished"));
+        assert_eq!(closed.store.run_reply("run-1").unwrap(), None);
+
+        // A tray that died mid-run: at the next start the run expires and its token stops working.
+        let mut orphan = run_fixture("t");
+        assert_eq!(orphan.store.expire_unfinished_runs().unwrap(), 1);
+        let run = &orphan.store.recent_runs(1).unwrap()[0];
+        assert_eq!(
+            (run.state.as_str(), run.outcome.as_deref()),
+            ("failed", Some("expired"))
+        );
+        assert!(run_reply(&mut orphan, "t").is_err());
+    }
+
+    #[test]
+    fn finishing_a_run_ends_its_own_session() {
+        use crate::runs::{run_session_id, RUN_ALIAS};
+        use crate::sessions::{Host, Registration};
+        let f = run_fixture("t");
+        let host = Host {
+            fingerprint: f.alice.fingerprint().unwrap(),
+            name: "alice".into(),
+        };
+        let registration = Registration {
+            session_id: run_session_id("run-1"),
+            alias: Some(RUN_ALIAS.into()),
+            ..Registration::default()
+        };
+        let agent = f.store.register_session(&host, &registration).unwrap()["agent_id"].clone();
+        assert_ne!(
+            agent,
+            serde_json::json!(host.fingerprint),
+            "a run never speaks as the host agent"
+        );
+        assert_eq!(f.store.live_sessions().unwrap().len(), 1);
+        f.store
+            .finish_run("run-1", "done", "ok", None, None)
+            .unwrap();
+        assert!(f.store.live_sessions().unwrap().is_empty());
     }
 
     #[test]

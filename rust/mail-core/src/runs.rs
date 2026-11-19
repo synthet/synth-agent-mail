@@ -1,5 +1,8 @@
-//! The tray consumer's bookkeeping in `mail.db` (schema v3, run tokens v4): which inbox messages it has handled,
-//! the one-time backlog marker, and one row per headless run.
+//! The tray consumer's bookkeeping in `mail.db` (schema v3; run tokens and deadlines v4): which
+//! inbox messages it has handled, the one-time backlog marker, and one row per headless run.
+//!
+//! A run's state goes `running` → `finishing` (the consumer closed the run-bound window) →
+//! `done` or `failed`. Run-bound calls work only while `running` and before `deadline_at`.
 
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
@@ -23,6 +26,7 @@ pub enum RunRefusal {
     UnknownRun,
     WrongToken,
     NotRunning,
+    Expired,
     AlreadyReplied,
 }
 
@@ -32,9 +36,18 @@ impl std::fmt::Display for RunRefusal {
             RunRefusal::UnknownRun => "reply_refused: unknown run",
             RunRefusal::WrongToken => "reply_refused: wrong run token",
             RunRefusal::NotRunning => "reply_refused: the run has finished",
+            RunRefusal::Expired => "reply_refused: the run's time limit has passed",
             RunRefusal::AlreadyReplied => "reply_refused: this run already replied",
         })
     }
+}
+
+/// The alias a run's own same-PC session publishes under, never the host's agent.
+pub const RUN_ALIAS: &str = "agent-mail-run";
+
+/// The session a run publishes from: one per run, ended when the run finishes.
+pub fn run_session_id(run_id: &str) -> String {
+    format!("run:{run_id}")
 }
 
 /// A fresh run token: 32 random bytes, hex. Only its SHA-256 is stored.
@@ -47,6 +60,15 @@ pub fn new_run_token() -> String {
 fn token_hash(token: &str) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(token.as_bytes()))
+}
+
+/// Compares in time that doesn't depend on where the inputs differ.
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |diff, (x, y)| diff | (x ^ y))
+            == 0
 }
 
 /// One headless run, as the dashboard shows it.
@@ -170,16 +192,65 @@ impl Store {
                 params![run_id, state, outcome, cost_usd, reply_id, now_ms() as i64],
             )
             .map_err(db)?;
+        self.end_run_session(run_id)
+    }
+
+    /// The run's own same-PC session stops counting as live, and its leases go.
+    fn end_run_session(&self, run_id: &str) -> Result<()> {
+        let session = run_session_id(run_id);
+        self.conn
+            .execute(
+                "UPDATE sessions SET last_seen = 0 WHERE session_id = ?1",
+                [&session],
+            )
+            .map_err(db)?;
+        self.conn
+            .execute(
+                "DELETE FROM conversation_leases WHERE session_id = ?1",
+                [&session],
+            )
+            .map_err(db)?;
         Ok(())
     }
 
-    /// Records the SHA-256 of the token handed to a run in `AGENT_MAIL_RUN_TOKEN`.
-    pub fn bind_run_token(&self, run_id: &str, token: &str) -> Result<()> {
+    /// Ends the run-bound window before the consumer picks the reply, so a late call from a
+    /// still-running agent can't add a second one. False when the run wasn't running.
+    pub fn close_run(&self, run_id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute(
+                "UPDATE runs SET state = 'finishing' WHERE run_id = ?1 AND state = 'running'",
+                [run_id],
+            )
+            .map_err(db)?
+            == 1)
+    }
+
+    /// At consumer start, every run still `running` or `finishing` belongs to a process that is
+    /// gone: mark it failed (`expired`) so its token stops working. Returns how many.
+    pub fn expire_unfinished_runs(&self) -> Result<usize> {
+        let ids: Vec<String> = self
+            .conn
+            .prepare("SELECT run_id FROM runs WHERE state IN ('running', 'finishing')")
+            .map_err(db)?
+            .query_map([], |row| row.get(0))
+            .map_err(db)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db)?;
+        for id in &ids {
+            self.finish_run(id, "failed", "expired", None, None)?;
+        }
+        Ok(ids.len())
+    }
+
+    /// Records the SHA-256 of the token handed to a run in `AGENT_MAIL_RUN_TOKEN`, and the time
+    /// after which run-bound calls are refused.
+    pub fn bind_run_token(&self, run_id: &str, token: &str, deadline_ms: u64) -> Result<()> {
         let changed = self
             .conn
             .execute(
-                "UPDATE runs SET token_sha256 = ?2 WHERE run_id = ?1",
-                params![run_id, token_hash(token)],
+                "UPDATE runs SET token_sha256 = ?2, deadline_at = ?3 WHERE run_id = ?1",
+                params![run_id, token_hash(token), deadline_ms as i64],
             )
             .map_err(db)?;
         if changed == 0 {
@@ -188,29 +259,35 @@ impl Store {
         Ok(())
     }
 
-    /// Checks a run token without using the run's reply. A run-bound call must still be running.
+    /// Checks a run token without using the run's reply. A run-bound call must come while the run
+    /// is still running and before its deadline.
     pub fn check_run(
         &self,
         run_id: &str,
         token: &str,
     ) -> Result<std::result::Result<RunMessage, RunRefusal>> {
-        let row: Option<(String, String, String, Option<String>)> = self
+        type Row = (String, String, String, Option<String>, Option<i64>);
+        let row: Option<Row> = self
             .conn
             .query_row(
-                "SELECT sender, message_id, state, token_sha256 FROM runs WHERE run_id = ?1",
+                "SELECT sender, message_id, state, token_sha256, deadline_at FROM runs WHERE run_id = ?1",
                 [run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .map_err(db)?;
-        let Some((sender, message_id, state, stored)) = row else {
+        let Some((sender, message_id, state, stored, deadline)) = row else {
             return Ok(Err(RunRefusal::UnknownRun));
         };
-        if token.is_empty() || stored.as_deref() != Some(token_hash(token).as_str()) {
+        let matches = stored.is_some_and(|stored| same(&stored, &token_hash(token)));
+        if token.is_empty() || !matches {
             return Ok(Err(RunRefusal::WrongToken));
         }
         if state != "running" {
             return Ok(Err(RunRefusal::NotRunning));
+        }
+        if deadline.is_none_or(|deadline| now_ms() as i64 > deadline) {
+            return Ok(Err(RunRefusal::Expired));
         }
         Ok(Ok(RunMessage { sender, message_id }))
     }

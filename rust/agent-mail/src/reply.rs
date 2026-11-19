@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use mail_core::envelope::AgentMeta;
-use mail_core::runs::RunMessage;
+use mail_core::runs::{run_session_id, RunMessage, RUN_ALIAS};
 use mail_core::send::reply_for_run;
 use mail_core::sessions::{Host, Registration};
 use mail_core::store::Store;
@@ -19,10 +19,20 @@ use crate::ops::{envelope_via_mailer, wait_for_delivery, OpError, Outcome};
 pub const RUN_TOKEN_ENV: &str = "AGENT_MAIL_RUN_TOKEN";
 
 /// A headless run's binding: its run id and token.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RunContext {
     pub run_id: String,
     token: String,
+}
+
+/// The token never appears in debug output.
+impl std::fmt::Debug for RunContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunContext")
+            .field("run_id", &self.run_id)
+            .field("token", &format_args!("<redacted>"))
+            .finish()
+    }
 }
 
 impl RunContext {
@@ -39,7 +49,7 @@ impl RunContext {
 
     /// The session a run publishes from: one per run, so recipients can tell runs apart.
     pub fn session_id(&self) -> String {
-        format!("run:{}", self.run_id)
+        run_session_id(&self.run_id)
     }
 
     /// Checks the token and that the run is still going; returns the message it answers.
@@ -72,7 +82,9 @@ impl RunContext {
         wait_for_delivery(home, &store, queued, wait)
     }
 
-    /// Registers (or refreshes) the run's own session so it can publish to sessions on this PC.
+    /// Registers (or refreshes) the run's own session so it can publish to sessions on this PC. It
+    /// uses the run alias, never the host's agent, so recipients see that a run wrote it from
+    /// untrusted remote mail. `finish_run` ends the session.
     pub fn register(&self, home: &Path, store: &Store) -> Result<String, OpError> {
         self.check(home)?;
         let session_id = self.session_id();
@@ -80,6 +92,7 @@ impl RunContext {
             &host(&Identity::load(home)?)?,
             &Registration {
                 session_id: session_id.clone(),
+                alias: Some(RUN_ALIAS.into()),
                 harness: Some("agent-mail-run".into()),
                 ..Registration::default()
             },

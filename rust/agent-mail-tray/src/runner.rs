@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 /// Everything a runner needs; all of it comes from `policy.json` or the consumer, none from mail.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RunRequest {
     pub run_id: String,
     pub home: PathBuf,
@@ -25,6 +25,23 @@ pub struct RunRequest {
     pub timeout: Duration,
     pub budget_usd: f64,
     pub model: Option<String>,
+}
+
+/// The prompt and run token never appear in debug output.
+impl std::fmt::Debug for RunRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunRequest")
+            .field("run_id", &self.run_id)
+            .field("home", &self.home)
+            .field("workspace", &self.workspace)
+            .field("prompt", &format_args!("<{} bytes>", self.prompt.len()))
+            .field("reply_file", &self.reply_file)
+            .field("run_token", &format_args!("<redacted>"))
+            .field("timeout", &self.timeout)
+            .field("budget_usd", &self.budget_usd)
+            .field("model", &self.model)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
