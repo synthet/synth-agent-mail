@@ -284,6 +284,20 @@ pub fn reply_file_text(path: &Path) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
+/// AC-14 (b) then (c): a non-empty `reply.md` wins over the final stdout message. `reply.md` counts
+/// whenever the run ended cleanly, including with an empty stdout result; stdout counts only for `ok`.
+pub fn collected_reply(
+    outcome: &str,
+    reply_file: Option<String>,
+    stdout_reply: Option<String>,
+) -> Option<String> {
+    match outcome {
+        "ok" => reply_file.or(stdout_reply),
+        "empty_output" => reply_file,
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +341,34 @@ mod tests {
             !args.iter().any(|a| a.contains("secret prompt")),
             "the prompt goes on stdin"
         );
+    }
+
+    #[test]
+    fn reply_md_wins_even_when_stdout_is_empty() {
+        let file = || Some("from reply.md".to_owned());
+        let stdout = || Some("from stdout".to_owned());
+        assert_eq!(
+            collected_reply("ok", file(), stdout()).as_deref(),
+            Some("from reply.md")
+        );
+        assert_eq!(
+            collected_reply("ok", None, stdout()).as_deref(),
+            Some("from stdout")
+        );
+        assert_eq!(
+            collected_reply("empty_output", file(), None).as_deref(),
+            Some("from reply.md")
+        );
+        assert_eq!(collected_reply("empty_output", None, None), None);
+        for failed in [
+            "timeout",
+            "error",
+            "auth_required",
+            "not_installed",
+            "rate_limited",
+        ] {
+            assert_eq!(collected_reply(failed, file(), stdout()), None, "{failed}");
+        }
     }
 
     #[test]
