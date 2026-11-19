@@ -10,11 +10,13 @@ use std::time::Duration;
 use agent_mail::install::{self, Program};
 use agent_mail::ops::{self, Outcome};
 use agent_mail::reply::RunContext;
+use agent_mail::{harness, hook};
 use clap::{Parser, Subcommand};
 use mail_core::identity::{fingerprint, validate_public, Identity, PublicIdentity};
 use mail_core::migrate::{import_journal, import_json_store};
 use mail_core::policy::Policy;
 use mail_core::send::{agent_profile, local_origin, validate_endpoint, ReplyRequest, SendRequest};
+use mail_core::sessions::{Publish, Registration};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, js};
 use serde_json::{json, Value};
@@ -174,6 +176,98 @@ enum Command {
         #[arg(long, default_value_t = 8000)]
         wait_ms: u64,
     },
+    /// Register this session for same-PC mail (alias from --agent-name; default: this host).
+    Register {
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        agent_name: Option<String>,
+        #[arg(long)]
+        harness: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        /// The harness's own session, thread or chat id.
+        #[arg(long)]
+        harness_session: Option<String>,
+        #[arg(long)]
+        display_name: Option<String>,
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Keep a session live (10 min TTL), end it (releases its leases), or list live sessions.
+    Session {
+        #[arg(value_parser = ["heartbeat", "end", "list"])]
+        action: String,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// 30 min conversation lease: one session answers a thread. Not a task claim, and not an access
+    /// control. `claim` exits 2 on lease_conflict.
+    Lease {
+        #[arg(value_parser = ["claim", "release", "show"])]
+        action: String,
+        #[arg(long)]
+        conversation: String,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Publish a direct message to an agent on this PC.
+    Publish {
+        /// Recipient agent id (from register or `session list`).
+        agent_id: String,
+        #[arg(long)]
+        session: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        subject: Option<String>,
+    },
+    /// A short untrusted digest, or with --unseen this session's unacked mail it hasn't been shown.
+    Digest {
+        /// Defaults to AGENT_MAIL_SESSION.
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        unseen: bool,
+        /// With --unseen: include bodies (cut at 4000 characters).
+        #[arg(long)]
+        json: bool,
+        /// Record shown messages (repeatable; KEY from --unseen).
+        #[arg(long = "mark-seen", value_name = "KEY")]
+        mark_seen: Vec<String>,
+    },
+    /// Hook entry points (inject|gate|ledger). Read the hook JSON on stdin; never break the session.
+    Hook {
+        verb: String,
+        /// SessionStart, UserPromptSubmit or Stop (inject; defaults to hook_event_name).
+        #[arg(long)]
+        event: Option<String>,
+        #[arg(long)]
+        harness: Option<String>,
+    },
+    /// One JSON line per new message for this session: ids, thread and sender, never bodies.
+    Watch {
+        /// Defaults to AGENT_MAIL_SESSION.
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        once: bool,
+        /// Report the existing backlog on the first poll instead of starting from now.
+        #[arg(long)]
+        backlog: bool,
+        #[arg(long, default_value_t = 2000)]
+        interval: u64,
+    },
+    /// Project-local hook templates that run this agent-mail against this home.
+    Harness {
+        #[arg(value_parser = ["install", "inspect", "uninstall"])]
+        action: String,
+        #[arg(long)]
+        target: PathBuf,
+        /// claude, codex, cursor or agy (install).
+        #[arg(long)]
+        harness: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -204,6 +298,17 @@ type Failure = Box<dyn std::error::Error>;
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let Some(home) = cli.home else {
+        // PreToolUse treats exit 1 as "no objection", so the send gate denies instead (fails closed).
+        if let Command::Hook { verb, .. } = &cli.command {
+            if verb == "gate" {
+                let mut raw = String::new();
+                let _ = std::io::stdin().read_to_string(&mut raw);
+                if let Some(response) = hook::gate_without_home(&hook::ToolInput::parse(&raw)) {
+                    println!("{response}");
+                }
+                return ExitCode::SUCCESS;
+            }
+        }
         eprintln!("agent-mail: --home is required (the Rust tools never default to the live TS home before cutover)");
         return ExitCode::from(1);
     };
@@ -347,6 +452,156 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
             report["journal"] = serde_json::to_value(import_journal(&from, &store, &host)?)?;
             print(&report);
         }
+        Command::Register {
+            session,
+            agent_name,
+            harness,
+            model,
+            harness_session,
+            display_name,
+            workspace,
+        } => {
+            let host = agent_mail::reply::host(&Identity::load(home)?)?;
+            print(&Store::open(home)?.register_session(
+                &host,
+                &Registration {
+                    session_id: session,
+                    alias: agent_name,
+                    harness,
+                    model,
+                    harness_session_id: harness_session,
+                    display_name,
+                    workspace,
+                },
+            )?);
+        }
+        Command::Session { action, session } => {
+            let mut store = Store::open(home)?;
+            let session = || session.clone().ok_or("Missing --session");
+            match action.as_str() {
+                "list" => print(&store.live_sessions()?),
+                "heartbeat" => print(&store.heartbeat(&session()?)?),
+                _ => print(&store.end_session(&session()?)?),
+            }
+        }
+        Command::Lease {
+            action,
+            conversation,
+            session,
+        } => {
+            let mut store = Store::open(home)?;
+            let session = || session.clone().ok_or("Missing --session");
+            match action.as_str() {
+                "show" => print(&json!({ "lease": store.conversation_lease(&conversation)? })),
+                "release" => print(&store.release_conversation(&session()?, &conversation)?),
+                _ => {
+                    let result = store.lease_conversation(&session()?, &conversation)?;
+                    print(&result);
+                    if result["status"] == "lease_conflict" {
+                        return Ok(ExitCode::from(2));
+                    }
+                }
+            }
+        }
+        Command::Publish {
+            agent_id,
+            session,
+            text,
+            subject,
+        } => print(&Store::open(home)?.publish_local(&Publish {
+            session_id: session,
+            body: text,
+            subject,
+            audience: None,
+            agent_id: Some(agent_id),
+            idempotency_key: None,
+        })?),
+        Command::Digest {
+            session,
+            unseen,
+            json: bodies,
+            mark_seen,
+        } => {
+            let session = session.or_else(|| std::env::var("AGENT_MAIL_SESSION").ok());
+            if unseen || !mark_seen.is_empty() {
+                let session = session.ok_or("Missing --session")?;
+                let store = Store::open_existing(home)?;
+                let seen = hook::SeenStore::new(home, &session)?;
+                if !mark_seen.is_empty() {
+                    print(&json!({ "ok": true, "marked": seen.mark(&mark_seen)? }));
+                } else {
+                    let messages = hook::unseen(&store, &seen, &session, 20, bodies)
+                        .map_err(|error| error.to_string())?;
+                    print(
+                        &json!({ "ok": true, "untrusted": true, "session": session, "messages": messages }),
+                    );
+                }
+            } else {
+                let session = session.unwrap_or_else(|| "cli".into());
+                match Store::open_existing(home).and_then(|store| store.local_digest(&session, 5)) {
+                    Ok(digest) => print(&digest),
+                    Err(error) => print(
+                        &json!({ "ok": true, "untrusted": true, "messages": [], "warning": error.to_string() }),
+                    ),
+                }
+            }
+        }
+        Command::Hook {
+            verb,
+            event,
+            harness,
+        } => run_hook(home, &verb, event, harness.as_deref()),
+        Command::Watch {
+            session,
+            once,
+            backlog,
+            interval,
+        } => {
+            let session = session
+                .or_else(|| std::env::var("AGENT_MAIL_SESSION").ok())
+                .ok_or("Missing --session")?;
+            let interval = Duration::from_millis(interval.max(500));
+            let mut last_beat: Option<std::time::Instant> = None;
+            // Opened once: each open takes a short write lock for the schema check.
+            let mut store = Store::open_existing(home)?;
+            loop {
+                match hook::watch_poll(home, &store, &session, backlog)
+                    .map_err(|error| error.to_string())
+                    .inspect(|_| {
+                        // Liveness goes to mail.db, not stdout: under a monitor every line wakes the model.
+                        if last_beat.is_none_or(|at| at.elapsed() >= Duration::from_secs(300)) {
+                            last_beat = Some(std::time::Instant::now());
+                            let _ = store.heartbeat(&session);
+                        }
+                    }) {
+                    Ok(lines) => {
+                        for line in lines {
+                            println!("{line}");
+                        }
+                    }
+                    Err(error) if once => return Err(error.into()),
+                    Err(error) => eprintln!("[agent-mail] watch: {error}"),
+                }
+                if once {
+                    break;
+                }
+                std::thread::sleep(interval);
+            }
+        }
+        Command::Harness {
+            action,
+            target,
+            harness,
+        } => print(&match action.as_str() {
+            "install" => harness::install(
+                &target,
+                &harness.ok_or("Missing --harness")?,
+                &std::env::current_exe()?,
+                &std::path::absolute(home)?,
+            )?,
+            "inspect" => harness::inspect(&target)?,
+            _ => harness::uninstall(&target)?,
+        }),
         Command::Reply {
             sender,
             message_id,
@@ -413,6 +668,46 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
         } => print(&json!({ "ok": true, "policy": Policy::load(home)? })),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// `hook inject|gate|ledger`. A hook must never break the session: problems go to stderr and the
+/// exit code stays 0. The gate fails closed for a sending tool it can read.
+fn run_hook(home: &Path, verb: &str, event: Option<String>, harness: Option<&str>) {
+    let mut raw = String::new();
+    let _ = std::io::stdin().read_to_string(&mut raw);
+    let raw = raw.trim();
+    match verb {
+        "gate" => {
+            let input = hook::ToolInput::parse(raw);
+            if let Some(response) = hook::gate(&input, home, harness) {
+                println!("{response}");
+            }
+        }
+        "ledger" => {
+            let input = hook::ToolInput::parse(raw);
+            if let Err(error) = hook::ledger_hook(&input, home, harness) {
+                eprintln!("agent-mail hook ledger: {error}");
+            }
+        }
+        "inject" => {
+            let input = hook::HookInput::parse(raw);
+            let event = event
+                .or_else(|| input.hook_event_name.clone())
+                .unwrap_or_default();
+            let response = Store::open_existing(home)
+                .map_err(|error| error.to_string())
+                .and_then(|store| {
+                    hook::inject(&event, &input, home, &store, harness.unwrap_or("hook"))
+                        .map_err(|error| error.to_string())
+                });
+            match response {
+                Ok(Some(response)) => println!("{response}"),
+                Ok(None) => {}
+                Err(error) => eprintln!("agent-mail hook: {error}"),
+            }
+        }
+        _ => eprintln!("agent-mail hook: Use: hook inject|gate|ledger"),
+    }
 }
 
 /// A peer's public.json. The extra fields `identity` prints (`fingerprint`, `origin`, `agent`)

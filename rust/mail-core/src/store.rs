@@ -216,6 +216,21 @@ pub struct Store {
 }
 
 impl Store {
+    /// Opens `<home>/mail.db` only if the home is set up (`identity.json` and `mail.db` exist), so a
+    /// hook or reader pointed at a mistyped `--home` fails instead of creating an empty mailbox.
+    pub fn open_existing(home: &Path) -> Result<Self> {
+        if !home.join("identity.json").is_file() || !home.join(DB_FILE).is_file() {
+            return Err(invalid(
+                "home",
+                format!(
+                    "no agent-mail home at {} (identity.json or mail.db is missing); check --home",
+                    home.display()
+                ),
+            ));
+        }
+        Store::open(home)
+    }
+
     /// Opens or creates `<home>/mail.db`.
     pub fn open(home: &Path) -> Result<Self> {
         std::fs::create_dir_all(home)?;
