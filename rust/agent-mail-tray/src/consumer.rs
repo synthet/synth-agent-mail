@@ -27,7 +27,7 @@ use mail_core::send::{new_uuid, reply, ReplyRequest, SendError};
 use mail_core::store::{now_ms, Store};
 use mail_core::{ipc, Identity};
 
-use crate::runner::{reply_file_text, ClaudeRunner, RunRequest, Runner};
+use crate::runner::{collected_reply, reply_file_text, ClaudeRunner, RunRequest, Runner};
 
 const POLL: Duration = Duration::from_secs(3);
 const BATCH: usize = 20;
@@ -330,9 +330,11 @@ fn run_and_reply(
             result.cost_usd,
         ));
     }
-    let text = (result.outcome == "ok")
-        .then(|| reply_file_text(&reply_file).or(result.stdout_reply.clone()))
-        .flatten();
+    let text = collected_reply(
+        &result.outcome,
+        reply_file_text(&reply_file),
+        result.stdout_reply.clone(),
+    );
     let Some(text) = text else {
         store.finish_run(&run_id, "failed", &result.outcome, result.cost_usd, None)?;
         let why = if result.outcome == "ok" {

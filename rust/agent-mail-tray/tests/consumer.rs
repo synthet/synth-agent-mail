@@ -26,7 +26,8 @@ process.stdin.on("end", () => {
     run_id: process.env.AGENT_MAIL_RUN_ID, tags: (prompt.match(/<\/untrusted-remote-message>/g) || []).length,
   }) + "\n");
   if (!prompt.includes("STDOUT-ONLY")) fs.writeFileSync(process.env.AGENT_MAIL_REPLY_FILE, "answer from reply.md\n");
-  console.log(JSON.stringify({ type: "result", is_error: false, result: "answer from stdout", total_cost_usd: 0.0123 }));
+  const result = prompt.includes("EMPTY-STDOUT") ? "" : "answer from stdout";
+  console.log(JSON.stringify({ type: "result", is_error: false, result, total_cost_usd: 0.0123 }));
 });
 "#;
 
@@ -218,6 +219,24 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
     .await;
     assert_eq!(answer.text, "answer from stdout");
 
+    // reply.md written, but the final stdout result is empty (`empty_output`): reply.md still wins.
+    let third = send(
+        &alice,
+        "bob",
+        "answer in reply.md only, EMPTY-STDOUT",
+        Some("demo"),
+        |_| {},
+    );
+    wait_for(|| inbox(&bob.home).iter().any(|m| m.id == third).then_some(())).await;
+    assert_eq!(pass()[0].detail, "claude queued");
+    let answer = wait_for(|| {
+        inbox(&alice.home)
+            .into_iter()
+            .find(|m| m.in_reply_to.as_deref() == Some(third.as_str()))
+    })
+    .await;
+    assert_eq!(answer.text, "answer from reply.md");
+
     // The guards: automatic mail, deep mail and an unmapped project never start a run.
     let automatic = send(&alice, "bob", "an automatic note", Some("demo"), |r| {
         r.auto_reply = Some(true)
@@ -260,8 +279,8 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
         .collect();
     assert_eq!(
         calls.len(),
-        2,
-        "two runs, nothing for the backlog or the guarded mail"
+        3,
+        "three runs, nothing for the backlog or the guarded mail"
     );
     for call in &calls {
         let args: Vec<&str> = call["args"]
@@ -293,16 +312,21 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
 
     // Runs table and dashboard view.
     let runs = Store::open(&bob.home).unwrap().recent_runs(10).unwrap();
-    assert_eq!(runs.len(), 2);
-    assert!(runs.iter().all(|run| run.state == "done"
-        && run.outcome.as_deref() == Some("ok")
-        && run.reply_id.is_some()
-        && run.tier == "read"));
+    assert_eq!(runs.len(), 3);
+    let mut outcomes: Vec<&str> = runs
+        .iter()
+        .filter_map(|run| run.outcome.as_deref())
+        .collect();
+    outcomes.sort();
+    assert_eq!(outcomes, ["empty_output", "ok", "ok"]);
+    assert!(runs
+        .iter()
+        .all(|run| run.state == "done" && run.reply_id.is_some() && run.tier == "read"));
     assert!(runs
         .iter()
         .all(|run| run.cost_usd == Some(0.0123) && run.project.as_deref() == Some("demo")));
     let view = agent_mail_tray::dashboard::snapshot(&bob.home);
-    assert_eq!(view["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(view["runs"].as_array().unwrap().len(), 3);
     assert_eq!(view["runs"][0]["runner"], "claude");
 
     // Ledger: one line per decision plus one per reply, bodies only as hashes.
@@ -311,13 +335,13 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
         .lines()
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    assert_eq!(lines.iter().filter(|l| l["tool"] == "dispatch").count(), 5);
+    assert_eq!(lines.iter().filter(|l| l["tool"] == "dispatch").count(), 6);
     assert_eq!(
         lines
             .iter()
             .filter(|l| l["tool"] == "dispatch:reply")
             .count(),
-        2
+        3
     );
     assert!(lines
         .iter()
@@ -333,7 +357,7 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
         );
     }
     assert!(
-        inbox(&bob.home).len() >= 6,
+        inbox(&bob.home).len() >= 7,
         "the consumer never acknowledges mail"
     );
 }
