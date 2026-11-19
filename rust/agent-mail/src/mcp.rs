@@ -258,11 +258,24 @@ impl MailServer {
 #[tool_router]
 impl MailServer {
     pub fn new(home: PathBuf, agent: Option<AgentMeta>, run: Option<RunContext>) -> Self {
+        let mut tool_router = Self::tool_router();
+        if run.is_some() {
+            // A run sees only its tools; `run_refuses` still guards each call.
+            let hidden: Vec<String> = tool_router
+                .list_all()
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .filter(|name| !RUN_TOOLS.contains(&name.as_str()))
+                .collect();
+            for name in hidden {
+                tool_router.disable_route(name);
+            }
+        }
         MailServer {
             home,
             agent,
             run,
-            tool_router: Self::tool_router(),
+            tool_router,
         }
     }
 

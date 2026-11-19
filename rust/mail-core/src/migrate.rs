@@ -143,6 +143,22 @@ pub fn import_journal(from: &Path, store: &Store, host: &Host) -> Result<Option<
         std::env::temp_dir().join(format!("agent-mail-journal-{}", crate::send::new_uuid()));
     std::fs::create_dir_all(&scratch)?;
     let result = (|| {
+        let journal = snapshot(from, &scratch)?;
+        let report = copy_sessions(&journal, store, host);
+        drop(journal);
+        report
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    result.map(Some)
+}
+
+/// Copies `journal.db` and its WAL, then checks the copy. A TS process writing during the copy
+/// can tear it, so a copy that fails `quick_check` is taken again, up to three times.
+fn snapshot(from: &Path, scratch: &Path) -> Result<rusqlite::Connection> {
+    for attempt in 0..3 {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(scratch.join(format!("journal.db{suffix}")));
+        }
         for suffix in ["", "-wal"] {
             let file = from.join(format!("journal.db{suffix}"));
             if file.is_file() {
@@ -150,12 +166,20 @@ pub fn import_journal(from: &Path, store: &Store, host: &Host) -> Result<Option<
             }
         }
         let journal = rusqlite::Connection::open(scratch.join("journal.db")).map_err(db)?;
-        let report = copy_sessions(&journal, store, host);
+        let check: rusqlite::Result<String> =
+            journal.query_row("PRAGMA quick_check", [], |row| row.get(0));
+        if check.as_deref() == Ok("ok") {
+            return Ok(journal);
+        }
         drop(journal);
-        report
-    })();
-    let _ = std::fs::remove_dir_all(&scratch);
-    result.map(Some)
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
+    Err(crate::Error::Db(
+        "journal.db changed while it was copied; stop the TS tray and MCP servers, then run migrate again"
+            .into(),
+    ))
 }
 
 fn has_table(journal: &rusqlite::Connection, table: &str) -> Result<bool> {
@@ -314,6 +338,18 @@ fn copy_sessions(
             .collect::<rusqlite::Result<_>>()
             .map_err(db)?;
         for (conversation_id, session_id, lease_until) in leases {
+            let known: bool = store
+                .conn
+                .query_row(
+                    "SELECT EXISTS (SELECT 1 FROM sessions WHERE session_id = ?1)",
+                    [&session_id],
+                    |row| row.get(0),
+                )
+                .map_err(db)?;
+            if !known {
+                report.leases.invalid.push(conversation_id);
+                continue;
+            }
             let inserted = store
                 .conn
                 .execute(
@@ -372,8 +408,10 @@ mod tests {
 
         let first = import_journal(&from, &store, &host).unwrap().unwrap();
         assert_eq!(first.sessions.imported, 2);
+        assert_eq!(first.leases.imported, 1);
         assert_eq!(
-            first.leases.imported, 1,
+            first.leases.invalid,
+            vec!["conv-2"],
             "a lease for an unknown session is skipped"
         );
         let again = import_journal(&from, &store, &host).unwrap().unwrap();

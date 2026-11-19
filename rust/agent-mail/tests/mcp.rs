@@ -505,7 +505,9 @@ async fn run_for_question(dir: &Path, token: &str) -> (PathBuf, PathBuf, Value, 
             finished_at: None,
         })
         .unwrap();
-    store.bind_run_token("run-1", token).unwrap();
+    store
+        .bind_run_token("run-1", token, mail_core::store::now_ms() + 120_000)
+        .unwrap();
     (alice, bob, question, (alice_mailer, bob_mailer))
 }
 
@@ -554,6 +556,7 @@ async fn run_mode_offers_only_the_run_bound_tools_and_replies_once_to_the_runs_m
     }
 
     let other_id = mail_core::send::new_uuid();
+    let alice_home = alice.clone();
     let run = tokio::task::spawn_blocking(move || {
         mcp_run(
             &alice,
@@ -572,12 +575,25 @@ async fn run_mode_offers_only_the_run_bound_tools_and_replies_once_to_the_runs_m
     })
     .await
     .unwrap();
+    let mut listed: Vec<&str> = run["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    listed.sort();
+    assert_eq!(
+        listed,
+        [
+            "mailbox_list_sessions",
+            "mailbox_publish",
+            "reply_to_message"
+        ],
+        "run mode lists only its tools"
+    );
     let results = run["results"].as_array().unwrap();
     for refused in &results[0..3] {
-        assert!(
-            refused["text"].as_str().unwrap().starts_with("run_mode:"),
-            "{refused}"
-        );
+        assert!(refused["isError"].as_bool().unwrap(), "{refused}");
     }
     assert!(!results[3]["isError"].as_bool().unwrap(), "{}", results[3]);
     let published = text(&results[4]);
@@ -595,6 +611,20 @@ async fn run_mode_offers_only_the_run_bound_tools_and_replies_once_to_the_runs_m
         "{}",
         results[7]
     );
+
+    // The run published under its own alias, not as this PC's host agent.
+    let host_fp = cli(&alice_home, &["identity"])["fingerprint"].clone();
+    let note = tokio::task::spawn_blocking(move || {
+        mcp(
+            &alice_home,
+            json!([{ "name": "mailbox_list", "arguments": { "session_id": "rev" } }]),
+        )
+    })
+    .await
+    .unwrap();
+    let note = text(&note["results"][0])[0].clone();
+    assert_eq!(note["sender_session"], "run:run-1");
+    assert_ne!(note["sender_agent"], host_fp);
 
     let answer = cli(&bob, &["inbox"])[0].clone();
     assert_eq!(answer["text"], "v0.4.0");
@@ -635,4 +665,40 @@ async fn cli_reply_in_run_mode_checks_the_token() {
     let answer = cli(&bob, &["inbox"])[0].clone();
     assert_eq!(answer["text"], "from the cli");
     assert_eq!(answer["in_reply_to"], question["id"]);
+}
+
+#[test]
+fn migrate_leaves_policy_json_and_the_ts_home_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, ts) = (dir.path().join("rs"), dir.path().join("ts"));
+    cli(&home, &["init", "--name", "solo"]);
+    cli(&home, &["policy", "init"]);
+    std::fs::create_dir_all(ts.join("inbox")).unwrap();
+    std::fs::write(ts.join("policy.json"), "{\"allowed_peers\":[\"x\"]}").unwrap();
+    let before = (
+        std::fs::read(home.join("policy.json")).unwrap(),
+        std::fs::read(ts.join("policy.json")).unwrap(),
+    );
+    let report = cli(&home, &["migrate", "--from", ts.to_str().unwrap()]);
+    assert_eq!(
+        report["journal"],
+        Value::Null,
+        "no journal.db, nothing to import"
+    );
+    let after = (
+        std::fs::read(home.join("policy.json")).unwrap(),
+        std::fs::read(ts.join("policy.json")).unwrap(),
+    );
+    assert_eq!(before, after);
+
+    // Without an identity nothing is imported at all.
+    let bare = dir.path().join("bare");
+    let out = Command::new(env!("CARGO_BIN_EXE_agent-mail"))
+        .arg("--home")
+        .arg(&bare)
+        .args(["migrate", "--from", ts.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(!bare.join("mail.db").exists());
 }

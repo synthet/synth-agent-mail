@@ -31,6 +31,8 @@ use crate::runner::{collected_reply, reply_file_text, ClaudeRunner, RunRequest, 
 
 const POLL: Duration = Duration::from_secs(3);
 const BATCH: usize = 20;
+/// How long after its time limit a run token still works (the runner kills the run at the limit).
+const RUN_TOKEN_MARGIN_MS: u64 = 60_000;
 
 /// Per-peer sliding one-minute window over the actions this process started (TS `RateWindow`).
 #[derive(Default)]
@@ -76,6 +78,10 @@ pub fn default_runners() -> RunnerFactory {
 pub fn spawn(home: PathBuf, runners: RunnerFactory) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut rate = RateWindow::default();
+        // One tray per home: a run still open now belongs to a process that is gone.
+        if let Err(error) = Store::open(&home).and_then(|store| store.expire_unfinished_runs()) {
+            eprintln!("agent-mail-tray: consumer: expiring old runs: {error}");
+        }
         loop {
             if let Err(error) = tick(&home, &mut rate, &runners) {
                 eprintln!("agent-mail-tray: consumer: {error}");
@@ -302,8 +308,10 @@ fn run_and_reply(
         finished_at: None,
     })?;
     // AC-15: only this run's agent gets the token, in its environment; mail.db keeps the hash.
+    // The token stops working at the run's time limit plus a margin, even if the tray dies.
     let run_token = new_run_token();
-    store.bind_run_token(&run_id, &run_token)?;
+    let deadline = now_ms() + dispatch.limits.timeout_ms + RUN_TOKEN_MARGIN_MS;
+    store.bind_run_token(&run_id, &run_token, deadline)?;
     if !workspace.is_dir() {
         store.finish_run(&run_id, "failed", "no_workspace_folder", None, None)?;
         return Ok((
@@ -322,6 +330,8 @@ fn run_and_reply(
         budget_usd: dispatch.limits.budget_usd,
         model,
     });
+    // Close the run-bound window first, so a late reply_to_message can't make a second reply.
+    store.close_run(&run_id)?;
     // AC-14: a run-bound reply (T-7) wins, then reply.md, then the final stdout message.
     if store.run_reply(&run_id)?.is_some() {
         store.finish_run(&run_id, "done", &result.outcome, result.cost_usd, None)?;

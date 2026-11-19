@@ -434,9 +434,10 @@ fn run(home: &Path, command: Command) -> Result<ExitCode, Failure> {
         }
         Command::Migrate { from } => {
             let from = from.unwrap_or_else(|| home.to_path_buf());
+            // The identity first: without it nothing is imported, rather than half the areas.
+            let host = agent_mail::reply::host(&Identity::load(home)?)?;
             let store = Store::open(home)?;
             let mut report = serde_json::to_value(import_json_store(&from, &store)?)?;
-            let host = agent_mail::reply::host(&Identity::load(home)?)?;
             report["journal"] = serde_json::to_value(import_journal(&from, &store, &host)?)?;
             print(&report);
         }

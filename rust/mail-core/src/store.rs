@@ -57,6 +57,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         // conversation leases and local messages of the TS journal. Never synced.
         4,
         "ALTER TABLE runs ADD COLUMN token_sha256 TEXT;
+         ALTER TABLE runs ADD COLUMN deadline_at INTEGER;
          CREATE TABLE IF NOT EXISTS agents (
            agent_id   TEXT PRIMARY KEY,
            alias      TEXT NOT NULL UNIQUE,
@@ -432,4 +433,53 @@ pub(crate) fn contact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Co
 
 pub(crate) fn db(error: rusqlite::Error) -> Error {
     Error::Db(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_v3_mail_db_with_runs_upgrades_to_v4_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            // Build the v3 file the way an older build left it.
+            let conn = Connection::open(dir.path().join(DB_FILE)).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            for (target, sql) in MIGRATIONS {
+                if *target <= 3 {
+                    conn.execute_batch(sql).unwrap();
+                }
+            }
+            conn.pragma_update(None, "user_version", 3).unwrap();
+            conn.execute(
+                "INSERT INTO runs (run_id, sender, message_id, conversation_id, workspace, tier, runner, state, created_at)
+                 VALUES ('old', 's', 'm', 'c', 'w', 'read', 'claude', 'done', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let store = Store::open(dir.path()).unwrap();
+        let version: i64 = store
+            .conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let runs = store.recent_runs(10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, "old");
+        let (token, deadline): (Option<String>, Option<i64>) = store
+            .conn
+            .query_row(
+                "SELECT token_sha256, deadline_at FROM runs WHERE run_id = 'old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((token, deadline), (None, None));
+        assert_eq!(store.live_sessions().unwrap(), vec![]);
+        // Opening again is a no-op.
+        drop(store);
+        assert!(Store::open(dir.path()).is_ok());
+    }
 }
