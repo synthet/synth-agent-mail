@@ -31,6 +31,8 @@ struct Args {
 }
 
 fn main() -> std::process::ExitCode {
+    #[cfg(windows)]
+    win::dpi_aware();
     let args = Args::parse();
     match run(args) {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -120,6 +122,16 @@ mod win {
 
     fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// Draws the tray menu and message boxes at the display's real DPI. Without it, Windows renders
+    /// them at 96 DPI and stretches the bitmap, which blurs text on a scaled display. Must run
+    /// before any window exists; it fails harmlessly if a manifest already set the awareness.
+    pub fn dpi_aware() {
+        use windows_sys::Win32::UI::HiDpi::{
+            SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        };
+        unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     }
 
     pub struct Instance(HANDLE);
