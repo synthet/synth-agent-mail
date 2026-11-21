@@ -86,19 +86,35 @@ pub fn current_user() -> Result<String, String> {
 
 /// The Task Scheduler XML: a logon trigger for `user`, run as `user` at least privilege, never
 /// stopped for battery or time limits, restarted three times a minute apart if it fails.
-pub fn task_xml(user: &str, exe: &Path, arguments: &str, description: &str) -> String {
+///
+/// `keep_alive` adds a trigger that fires every minute from registration on. With `IgnoreNew` it
+/// does nothing while the program runs and starts it again within a minute after any exit. The
+/// mailer needs it: it runs under `conhost --headless`, which reports exit code 0 whatever the
+/// mailer returned, so restart-on-failure never fires for it.
+pub fn task_xml(
+    user: &str,
+    exe: &Path,
+    arguments: &str,
+    description: &str,
+    keep_alive: bool,
+) -> String {
     let (user, exe, arguments, description) = (
         xml_escape(user),
         xml_escape(&exe.to_string_lossy()),
         xml_escape(arguments),
         xml_escape(description),
     );
+    let keep_alive = if keep_alive {
+        "\n    <TimeTrigger><Repetition><Interval>PT1M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition><StartBoundary>2000-01-01T00:00:00</StartBoundary><Enabled>true</Enabled></TimeTrigger>"
+    } else {
+        ""
+    };
     format!(
         r#"<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo><Description>{description}</Description></RegistrationInfo>
   <Triggers>
-    <LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger>
+    <LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger>{keep_alive}
   </Triggers>
   <Principals>
     <Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal>
@@ -190,6 +206,7 @@ pub fn install(
         &command,
         &command_arguments,
         &format!("agent-mail {} for {}", program.stem(), home.display()),
+        matches!(program, Program::Mailer { .. }),
     );
     let file = std::env::temp_dir().join(format!("agent-mail-task-{}.xml", std::process::id()));
     // Task Scheduler reads UTF-16 with a byte-order mark.
@@ -254,6 +271,7 @@ mod tests {
             Path::new(r"C:\Tools & Bits\agent-maild.exe"),
             r#"--home "C:\h""#,
             "agent-mail <test>",
+            false,
         );
         assert!(xml.contains(r"<UserId>PC\o&apos;neil</UserId>"));
         assert!(xml.contains(r"<Command>C:\Tools &amp; Bits\agent-maild.exe</Command>"));
@@ -261,6 +279,16 @@ mod tests {
         assert!(xml.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(xml.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(!xml.contains("SYSTEM"));
+    }
+
+    #[test]
+    fn only_keep_alive_tasks_repeat_every_minute() {
+        let xml = |keep_alive| task_xml("PC\\me", Path::new(r"C:\x.exe"), "", "d", keep_alive);
+        let mailer = xml(true);
+        assert!(mailer.contains("<TimeTrigger><Repetition><Interval>PT1M</Interval>"));
+        assert!(mailer.contains("<LogonTrigger>"));
+        assert!(mailer.contains("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"));
+        assert!(!xml(false).contains("TimeTrigger"));
     }
 
     #[test]

@@ -142,7 +142,7 @@ pub async fn resolve_hosts(entries: &[String], default_port: u16) -> Vec<(IpAddr
     let mut seen = HashSet::new();
     for entry in entries {
         let Some((host, port)) = parse_host_entry(entry, default_port) else {
-            eprintln!("agent-maild: ignoring hosts.json entry {entry:?}");
+            crate::log!("agent-maild: ignoring hosts.json entry {entry:?}");
             continue;
         };
         let Ok(addresses) = tokio::net::lookup_host((host.as_str(), port)).await else {
