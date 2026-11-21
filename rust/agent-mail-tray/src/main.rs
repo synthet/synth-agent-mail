@@ -215,11 +215,24 @@ mod win {
         )
     }
 
-    /// Starts `agent-maild` for this home with no console window, logging to `<home>/agent-maild.log`.
+    /// Starts `agent-maild` for this home: through its logon task when `agent-mail service install`
+    /// made one, so the task's keep-alive trigger sees it running; otherwise directly, with no
+    /// console window, logging to `<home>/agent-maild.log`.
     fn start_mailer(mailer: &Path, home: &Path) -> Result<(), Failure> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const DETACHED_PROCESS: u32 = 0x0000_0008;
+        let task = format!(r"AgentMail\agent-maild-{}", mail_core::ipc::home_key(home));
+        let ran = std::process::Command::new("schtasks")
+            .args(["/Run", "/TN", &task])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        if ran.is_ok_and(|status| status.success()) {
+            return Ok(());
+        }
         std::process::Command::new(mailer)
             .arg("--home")
             .arg(home)

@@ -62,7 +62,7 @@ impl Outbox {
     pub async fn run(self: Arc<Self>, notify: Arc<Notify>) {
         loop {
             if let Err(error) = self.drain_once().await {
-                eprintln!("agent-maild: outbox: {error}");
+                crate::log!("agent-maild: outbox: {error}");
             }
             tokio::select! {
                 _ = notify.notified() => {}

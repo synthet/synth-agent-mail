@@ -13,7 +13,7 @@ pub mod probe;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mail_core::store::{HostSource, Store};
 use mail_core::Identity;
@@ -26,6 +26,42 @@ pub const DEFAULT_PORT: u16 = 47832;
 const LAN_QUERY_TIMEOUT: Duration = Duration::from_millis(1200);
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// `eprintln!` with an RFC 3339 UTC timestamp first, so `agent-maild.log` shows when each line
+/// was written.
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => {
+        eprintln!("{} {}", $crate::timestamp(), format_args!($($arg)*))
+    };
+}
+
+/// Now as RFC 3339 UTC with milliseconds, such as `2026-11-20T14:28:02.123Z`.
+pub fn timestamp() -> String {
+    rfc3339(SystemTime::now())
+}
+
+fn rfc3339(time: SystemTime) -> String {
+    let since = time.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let (days, secs) = ((since.as_secs() / 86_400) as i64, since.as_secs() % 86_400);
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's civil_from_days).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        secs / 3600,
+        secs % 3600 / 60,
+        secs % 60,
+        since.subsec_millis()
+    )
+}
 
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -115,7 +151,7 @@ pub async fn start(config: Config) -> Result<Mailer, BoxError> {
             loop {
                 ticks.tick().await;
                 if let Err(error) = scan_once(&config, &own).await {
-                    eprintln!("agent-maild: host scan failed: {error}");
+                    crate::log!("agent-maild: host scan failed: {error}");
                 }
             }
         }));
@@ -142,7 +178,7 @@ pub async fn scan_once(config: &Config, own_fingerprint: &str) -> Result<ScanRep
     if let Some(discovery) = config.discovery {
         match discovery::query_lan(discovery, LAN_QUERY_TIMEOUT).await {
             Ok(peers) => found.extend(peers.into_iter().map(|peer| (peer, HostSource::Multicast))),
-            Err(error) => eprintln!("agent-maild: LAN discovery unavailable: {error}"),
+            Err(error) => crate::log!("agent-maild: LAN discovery unavailable: {error}"),
         }
     }
     let client = probe::client();
@@ -156,7 +192,7 @@ pub async fn scan_once(config: &Config, own_fingerprint: &str) -> Result<ScanRep
                     .map(|peer| (peer, HostSource::Static)),
             );
         }
-        Err(error) => eprintln!("agent-maild: {error}"),
+        Err(error) => crate::log!("agent-maild: {error}"),
     }
     if config.tailscale {
         if let Some(status) = probe::tailscale_status().await {
@@ -192,4 +228,17 @@ fn record(home: &Path, found: &[(Discovered, HostSource)]) -> Result<(), BoxErro
         store.saw_host(&peer.identity, &peer.endpoint, *source)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rfc3339_formats_utc_with_milliseconds() {
+        let at = |ms: u64| rfc3339(UNIX_EPOCH + Duration::from_millis(ms));
+        assert_eq!(at(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(at(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(at(1_795_208_675_750), "2026-11-20T21:04:35.750Z");
+    }
 }

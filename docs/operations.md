@@ -85,10 +85,10 @@ Before you start: T-7 and T-10 must be merged. Build the three Rust binaries fro
 The new `mail.db` schema (v4) is one-way. An older `agent-mail`, `agent-maild` or `agent-mail-tray` refuses a v4 file ("schema version 4 is newer than this build"). That includes the MCP server that every open session runs. So upgrade all three binaries together:
 
 1. Close every Claude Code and Codex session on the PC. Each one holds an `agent-mail.exe mcp` process.
-2. Stop both `\AgentMail\` tasks: `Stop-ScheduledTask -TaskPath \AgentMail\ -TaskName <name>`.
+2. Disable, then stop, both `\AgentMail\` tasks: `Disable-ScheduledTask -TaskPath \AgentMail\ -TaskName <name>`, then `Stop-ScheduledTask` with the same arguments. The mailer task has a keep-alive trigger that starts it again within a minute, so stopping it alone isn't enough.
 3. Copy `mail.db`, `mail.db-wal` and `mail.db-shm` from the home into a backup folder.
 4. Replace the three `.exe` files in `%LOCALAPPDATA%\Programs\agent-mail-rs`.
-5. Start both tasks again.
+5. Re-register the mailer task so it has the keep-alive trigger: `& $cli --home $h service install --port 47842`. A task registered before af-4ha87 has only the logon trigger. Then enable and start both tasks again (`Enable-ScheduledTask`, `Start-ScheduledTask`).
 
 `mail.db` moves to v4 the first time a new binary opens it. To roll back, put the old binaries and the backed-up `mail.db*` back in place.
 

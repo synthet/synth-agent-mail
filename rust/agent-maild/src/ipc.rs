@@ -99,7 +99,7 @@ pub fn serve(
             server = match ServerOptions::new().create(&name) {
                 Ok(next) => next,
                 Err(error) => {
-                    eprintln!("agent-maild: local channel stopped: {error}");
+                    crate::log!("agent-maild: local channel stopped: {error}");
                     return;
                 }
             };

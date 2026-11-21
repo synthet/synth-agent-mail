@@ -53,7 +53,7 @@ pub async fn serve(listener: TcpListener, receiver: Arc<Receiver>) {
         let stream = match listener.accept().await {
             Ok((stream, _)) => stream,
             Err(error) => {
-                eprintln!("agent-maild: accept failed: {error}");
+                crate::log!("agent-maild: accept failed: {error}");
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
@@ -143,7 +143,7 @@ async fn message(request: Request<Incoming>, receiver: Arc<Receiver>) -> Reply {
         Ok(Ok(Accepted::Conflict)) => empty(StatusCode::CONFLICT),
         Ok(Err(Failure::Rejected)) => rejected(),
         Ok(Err(Failure::Store(error))) => {
-            eprintln!("agent-maild: store error: {error}");
+            crate::log!("agent-maild: store error: {error}");
             empty(StatusCode::INTERNAL_SERVER_ERROR)
         }
         Err(_) => empty(StatusCode::INTERNAL_SERVER_ERROR),

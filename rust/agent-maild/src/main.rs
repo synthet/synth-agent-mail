@@ -50,7 +50,7 @@ async fn main() -> std::process::ExitCode {
     match run(Args::parse()).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("agent-maild: {error}");
+            agent_maild::log!("agent-maild: {error}");
             std::process::ExitCode::from(1)
         }
     }
@@ -75,17 +75,44 @@ async fn run(args: Args) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
         deliver: true,
     })
     .await?;
-    eprintln!(
-        "agent-maild: {} receiving on port {}",
-        mailer.fingerprint, mailer.port
+    agent_maild::log!(
+        "agent-maild: {} receiving on port {} (pid {})",
+        mailer.fingerprint,
+        mailer.port,
+        std::process::id()
     );
-    tokio::signal::ctrl_c().await?;
+    let reason = stop_signal().await?;
+    agent_maild::log!("agent-maild: stopping: {reason}");
     Ok(())
 }
 
+/// Waits for the console event that ends the mailer and names it for the log.
+#[cfg(windows)]
+async fn stop_signal() -> std::io::Result<&'static str> {
+    use tokio::signal::windows;
+    let mut ctrl_c = windows::ctrl_c()?;
+    let mut ctrl_break = windows::ctrl_break()?;
+    let mut close = windows::ctrl_close()?;
+    let mut logoff = windows::ctrl_logoff()?;
+    let mut shutdown = windows::ctrl_shutdown()?;
+    Ok(tokio::select! {
+        _ = ctrl_c.recv() => "Ctrl-C",
+        _ = ctrl_break.recv() => "Ctrl-Break",
+        _ = close.recv() => "console closed",
+        _ = logoff.recv() => "user logoff",
+        _ = shutdown.recv() => "system shutdown",
+    })
+}
+
+#[cfg(not(windows))]
+async fn stop_signal() -> std::io::Result<&'static str> {
+    tokio::signal::ctrl_c().await?;
+    Ok("Ctrl-C")
+}
+
 /// Sends stderr (every `eprintln!`) to `path`. It keeps the console: detaching would let the
-/// logon task's `conhost --headless` exit, so Task Scheduler would report the task as stopped and
-/// its restart-on-failure could never restart a crashed mailer.
+/// logon task's `conhost --headless` exit, so Task Scheduler would report the task as stopped while
+/// the mailer runs, and its keep-alive trigger would start a second copy every minute.
 #[cfg(windows)]
 fn log_to_file(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::io::IntoRawHandle;
