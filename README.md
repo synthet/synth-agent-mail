@@ -1,4 +1,4 @@
-# Agent mail
+# Synth Agent Mail
 
 Direct encrypted messaging for Cursor, Claude Code, Codex, Grok, and Antigravity agents on two or more PCs. Each machine runs one peer. There is no shared mailbox and no adapter in the default path.
 

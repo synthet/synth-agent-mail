@@ -2,6 +2,7 @@
   "name": "synthet-agent-mailbox",
   "version": "0.3.0",
   "description": "Direct encrypted peer messaging with LAN discovery, a standalone CLI, and stdio MCP",
+  "homepage": "https://synthet.github.io",
   "type": "module",
   "main": "dist/cli.js",
   "bin": { "agent-mail": "dist/cli.js" },
