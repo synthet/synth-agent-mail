@@ -114,12 +114,8 @@ fn canon<'a>(origin: &'a str, aliases: &'a BTreeMap<String, String>) -> &'a str 
 
 fn path_key(path: &Path) -> String {
     let text = path.to_string_lossy();
-    let text = text.trim_end_matches(['\\', '/']);
-    if cfg!(windows) {
-        text.to_lowercase()
-    } else {
-        text.to_owned()
-    }
+    // Lowercased everywhere, as cross-pc-ssh does: two checkouts differing only by case are one.
+    text.trim_end_matches(['\\', '/']).to_lowercase()
 }
 
 /// Picks the one candidate that is this repo.
@@ -182,15 +178,30 @@ pub fn choose(
     }
 }
 
-/// Runs a read-only git query in `dir`, killed after a few seconds, without a console window.
+/// Runs a read-only git query about `dir` itself, killed after a few seconds, without a console
+/// window. Discovery stops at `dir` (git never answers for an enclosing repo), and inherited
+/// repository variables are cleared so they can't point git elsewhere.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut command = Command::new("git");
+    command.arg("-C").arg(dir).args(args);
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+    ] {
+        command.env_remove(variable);
+    }
+    if let Some(parent) = dir.parent() {
+        command.env("GIT_CEILING_DIRECTORIES", parent);
+    }
     command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -200,26 +211,49 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let mut child = command.spawn().ok()?;
+    // Read while git runs, so a full pipe can't stall it until the time limit.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut stdout, &mut out).map(|_| out)
+    });
     let started = Instant::now();
-    loop {
-        match child.try_wait().ok()? {
-            Some(status) if status.success() => break,
-            Some(_) => return None,
-            None if started.elapsed() > GIT_TIMEOUT => {
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if started.elapsed() <= GIT_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                break false;
             }
-            None => std::thread::sleep(Duration::from_millis(20)),
         }
+    };
+    let out = reader.join().ok()?.ok()?;
+    success.then_some(out)
+}
+
+/// True when git's work tree for `dir` is `dir` itself.
+fn is_toplevel(dir: &Path) -> bool {
+    let Some(top) = git(dir, &["rev-parse", "--show-toplevel"]) else {
+        return false;
+    };
+    match (
+        std::fs::canonicalize(top.trim()),
+        std::fs::canonicalize(dir),
+    ) {
+        (Ok(top), Ok(dir)) => path_key(&top) == path_key(&dir),
+        _ => false,
     }
-    let mut out = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
-    Some(out)
 }
 
 /// The identity of the checkout at `dir`, or `None` when git can't read it.
 pub fn identify(dir: &Path) -> Option<RepoId> {
+    if !is_toplevel(dir) {
+        return None;
+    }
     let mut roots: Vec<String> = git(dir, &["rev-list", "--max-parents=0", "HEAD"])?
         .lines()
         .map(|line| line.trim().to_lowercase())
@@ -342,10 +376,16 @@ impl Resolver<'_> {
         let key = self.key(want);
         let mut cache = self.load();
         if let Some(path) = cache.checkouts.get(&key) {
-            let under_root = self.roots.iter().any(|root| {
-                path.parent()
-                    .is_some_and(|parent| path_key(parent) == path_key(root))
-            });
+            // A plain folder name directly under a root: never `..`, `.` or a drive or root prefix.
+            let plain_name = matches!(
+                path.components().next_back(),
+                Some(std::path::Component::Normal(_))
+            );
+            let under_root = plain_name
+                && self.roots.iter().any(|root| {
+                    path.parent()
+                        .is_some_and(|parent| path_key(parent) == path_key(root))
+                });
             if under_root {
                 if let Some(found) = candidate(path) {
                     if let Ok(path) = choose(want, &[found], self.aliases) {
@@ -547,15 +587,7 @@ mod tests {
             origin: Some("github.com/o/app".into()),
         };
         let a = cand("C:\\r\\app", &["aa"], Some("github.com/o/app"));
-        let same = cand(
-            if cfg!(windows) {
-                "c:\\R\\APP\\"
-            } else {
-                "C:\\r\\app/"
-            },
-            &["aa"],
-            Some("github.com/o/app"),
-        );
+        let same = cand("c:\\R\\APP\\", &["aa"], Some("github.com/o/app"));
         assert_eq!(
             choose(&want, &[a.clone(), same], &none()),
             Ok(a.path.clone())
@@ -618,5 +650,55 @@ mod tests {
             aliases: &aliases,
         };
         assert_eq!(unrooted.resolve(&want), Err(Unresolved::NoRoots));
+    }
+
+    #[test]
+    fn a_child_inside_another_repo_does_not_borrow_its_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let outer = dir.path().join("outer");
+        repo_with(&outer, Some("https://github.com/o/outer"), "outer root");
+        let roots = outer.join("roots");
+        std::fs::create_dir_all(roots.join("child").join(".git")).unwrap();
+        assert_eq!(
+            candidate(&roots.join("child")),
+            None,
+            "an empty .git is not a repo"
+        );
+        assert!(scan(std::slice::from_ref(&roots)).is_empty());
+    }
+
+    #[test]
+    fn a_cached_path_outside_the_roots_is_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let src = dir.path().join("src");
+        repo(&src, Some("https://github.com/o/app"));
+        // The roots folder sits inside a clone of the same repo, so its parent would match.
+        let outer = dir.path().join("outer");
+        clone(&src, &outer, "https://github.com/o/app");
+        let roots = vec![outer.join("roots")];
+        std::fs::create_dir_all(&roots[0]).unwrap();
+        let app = roots[0].join("app");
+        clone(&src, &app, "https://github.com/o/app");
+        let want = identify(&src).unwrap();
+        let aliases = none();
+        let resolver = Resolver {
+            home: &home,
+            roots: &roots,
+            aliases: &aliases,
+        };
+        for bogus in [roots[0].join(".."), outer.clone()] {
+            let cache = Cache {
+                checkouts: BTreeMap::from([(resolver.key(&want), bogus.clone())]),
+            };
+            resolver.save(&cache);
+            assert_eq!(
+                resolver.resolve(&want),
+                Ok(app.clone()),
+                "rescanned instead of using {}",
+                bogus.display()
+            );
+        }
     }
 }
