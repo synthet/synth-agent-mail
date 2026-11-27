@@ -139,12 +139,12 @@ fn with_body(mut item: Unseen, text: &str, bodies: bool) -> Unseen {
     item
 }
 
-/// Which peer mail belongs in this session (ADR 0006, af-f3m0e). A task is never shown to a session.
-/// Mail addressed to another live session, or naming a checkout where other live sessions work and
-/// this one doesn't, is left for them. If the addressee is gone, every session sees it again.
 /// A checkout identity as a map key: its root commits and origin.
 type CheckoutKey = (Vec<String>, Option<String>);
 
+/// Which peer mail belongs in this session (ADR 0006, af-f3m0e). A task is never shown to a session.
+/// Mail addressed to another live session, or naming a checkout where other live sessions work and
+/// this one doesn't, is left for them. If the addressee is gone, every session sees it again.
 pub struct Audience {
     /// This session's ids: the hook's `session_id`, and the `sessionId` in its own session record
     /// (found through `CLAUDE_PID`), which can differ after `/clear` or a resume.
