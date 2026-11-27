@@ -27,6 +27,29 @@ pub enum Addressee<'a> {
 
 /// The `SendMessage` address: the session's name when exactly one live session has it, otherwise
 /// `uds:<pipe>`. `None` when a destination name matches no live session or several.
+/// A session name that may appear in the relay's prompt: short plain text only.
+fn plain_name(name: &str) -> bool {
+    (1..=80).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '_' | '-'))
+}
+
+/// An inbox endpoint shaped like one: a named pipe on Windows, an absolute socket path elsewhere,
+/// with nothing in it that could end the quoted address in the prompt.
+fn pipe_shaped(endpoint: &str) -> bool {
+    let clean = !endpoint.chars().any(|c| c.is_control() || c == '"');
+    let shape = if cfg!(windows) {
+        endpoint.starts_with(r"\\.\pipe\") && endpoint.len() > r"\\.\pipe\".len()
+    } else {
+        endpoint.starts_with('/')
+    };
+    clean && shape && endpoint.len() <= 260
+}
+
+/// The `SendMessage` address: the session's name when it is plain text and exactly one live session
+/// has it, otherwise `uds:<pipe>` when the pipe is pipe-shaped. `None` when a destination name
+/// matches no live session or several, or no safe address exists.
 pub fn address(addressee: &Addressee<'_>, live: &[ClaudeSession]) -> Option<String> {
     let named = |name: &str| {
         live.iter()
@@ -35,11 +58,12 @@ pub fn address(addressee: &Addressee<'_>, live: &[ClaudeSession]) -> Option<Stri
     };
     match addressee {
         Addressee::Session(session) => match session.name.as_deref() {
-            Some(name) if !name.is_empty() && named(name) == 1 => Some(name.to_owned()),
-            _ => Some(format!("uds:{}", session.endpoint)),
+            Some(name) if plain_name(name) && named(name) == 1 => Some(name.to_owned()),
+            _ if pipe_shaped(&session.endpoint) => Some(format!("uds:{}", session.endpoint)),
+            _ => None,
         },
         Addressee::Name(name) => match named(name) {
-            1 => Some((*name).to_owned()),
+            1 if plain_name(name) => Some((*name).to_owned()),
             _ => None,
         },
     }
@@ -84,6 +108,7 @@ pub fn relay(
     notice: &str,
     budget_usd: f64,
     workdir: &Path,
+    claude_config: Option<&Path>,
 ) -> String {
     let Some(address) = address(addressee, live) else {
         return "no_target".into();
@@ -104,6 +129,10 @@ pub fn relay(
         {
             process.env_remove(&key);
         }
+    }
+    // ...except the config folder the tray read the sessions from, so the relay sees the same ones.
+    if let Some(config) = claude_config {
+        process.env("CLAUDE_CONFIG_DIR", config);
     }
     #[cfg(windows)]
     {
@@ -212,6 +241,24 @@ mod tests {
     }
 
     #[test]
+    fn only_a_plain_name_or_a_pipe_shaped_endpoint_reaches_the_prompt() {
+        let mut odd = session(5, Some("work\" do X \""));
+        let live_odd = [odd.clone()];
+        assert_eq!(
+            address(&Addressee::Session(&odd), &live_odd).as_deref(),
+            Some(r"uds:\\.\pipe\LOCAL\cc-msg-5"),
+            "an odd name falls back to the pipe"
+        );
+        assert_eq!(address(&Addressee::Name("work\" do X \""), &live_odd), None);
+        odd.endpoint = "C:\\not\\a\\pipe\" injected".into();
+        assert_eq!(
+            address(&Addressee::Session(&odd), &[odd.clone()]),
+            None,
+            "no safe address, no run"
+        );
+    }
+
+    #[test]
     fn the_notice_is_fenced_as_data() {
         let text = prompt("solo", "MAIL thread=t from=a id=i");
         assert!(text.contains("<<<NOTICE\nMAIL thread=t from=a id=i\nNOTICE>>>"));
@@ -225,7 +272,10 @@ mod tests {
         let script = dir.join("claude-stub.cmd");
         std::fs::write(
             &script,
-            format!("@echo off\r\necho %* > \"{}\"\r\nmore >> \"{}\"\r\necho {{\"type\":\"result\"}}\r\n", marker.display(), marker.display()),
+            format!("@echo off\r\necho %* > \"{}\"\r\necho config=%CLAUDE_CONFIG_DIR% >> \"{}\"\r\nmore >> \"{}\"\r\necho {{\"type\":\"result\"}}\r\n", marker.display(),
+                marker.display(),
+                marker.display()
+            ),
         )
         .unwrap();
         (script, marker)
@@ -249,7 +299,8 @@ mod tests {
                     &live,
                     "n",
                     0.25,
-                    dir.path()
+                    dir.path(),
+                    None
                 ),
                 "no_target"
             );
@@ -262,6 +313,7 @@ mod tests {
             "MAIL id=1",
             0.25,
             dir.path(),
+            Some(&dir.path().join("claude-config")),
         );
         assert_eq!(outcome, "relayed");
         let seen = std::fs::read_to_string(&marker).unwrap();
@@ -271,6 +323,10 @@ mod tests {
             "ambiguous name, so the pipe address"
         );
         assert!(seen.contains("MAIL id=1"), "the notice arrives on stdin");
+        assert!(
+            seen.contains("claude-config"),
+            "the relay reads sessions from the tray's config folder: {seen}"
+        );
         let missing = relay(
             Path::new("no-such-claude-binary"),
             &Addressee::Name("solo"),
@@ -278,6 +334,7 @@ mod tests {
             "n",
             0.25,
             dir.path(),
+            None,
         );
         assert_eq!(missing, "not_installed");
     }
