@@ -123,9 +123,9 @@ pub fn tick_in(
         store.record_backlog()?;
         return Ok(Vec::new());
     }
-    // Live sessions are read only when the owner turned live delivery on; with it off, routing is
-    // exactly what it was before ADR 0006.
-    let live = match (dispatch.live.enabled, sessions) {
+    // Live sessions are read only when the owner turned on live delivery or the relay; with both off,
+    // routing is exactly what it was before ADR 0006.
+    let live = match (dispatch.live.enabled || dispatch.live.relay, sessions) {
         (true, Some(dir)) => crate::live::live_sessions(dir),
         _ => Vec::new(),
     };
