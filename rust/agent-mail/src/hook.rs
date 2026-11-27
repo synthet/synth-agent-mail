@@ -804,7 +804,9 @@ mod audience_tests {
             vec!["m1"],
             "CLAUDE_PID names this session's record"
         );
-        // A pid whose record is someone else's doesn't make that session "me".
+        // CLAUDE_PID is trusted as this session's own process: if it names another live session's
+        // record (for example an inherited environment), that session's mail is shown here too.
+        // Nothing is marked read in the shared store, so the rightful session still gets it.
         assert_eq!(
             texts(&Audience::read_with(
                 &home,
