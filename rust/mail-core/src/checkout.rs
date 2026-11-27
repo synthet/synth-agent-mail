@@ -328,16 +328,17 @@ pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
 /// 1.3 `checkout` carries it. `None` outside a git checkout. No path leaves this function, and the
 /// folder name is left out when it is the OS user name (a repo at the profile folder).
 pub fn local_checkout(dir: &Path) -> Option<crate::envelope::Checkout> {
-    let set = |name: &str| {
-        std::env::var(name)
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-    };
-    let user = set("USERNAME").or_else(|| set("USER"));
-    let home = set("USERPROFILE")
-        .or_else(|| set("HOME"))
-        .map(PathBuf::from);
+    let env = |name: &str| std::env::var(name).ok();
+    let user = first_set(&["USERNAME", "USER"], env);
+    let home = first_set(&["USERPROFILE", "HOME"], env).map(PathBuf::from);
     local_checkout_as(dir, user.as_deref(), home.as_deref())
+}
+
+/// The first of `names` whose value is set and not blank: an empty `USERNAME` doesn't hide `USER`.
+fn first_set(names: &[&str], lookup: impl Fn(&str) -> Option<String>) -> Option<String> {
+    names
+        .iter()
+        .find_map(|name| lookup(name).filter(|value| !value.trim().is_empty()))
 }
 
 /// `local_checkout` with the OS user name and home folder passed in, for tests.
@@ -861,5 +862,60 @@ mod tests {
         assert_eq!(checkout.branch.as_deref(), Some("feature/x"));
         assert_eq!(checkout.name.as_deref(), Some("app"));
         assert!(checkout.head.is_some());
+    }
+
+    #[test]
+    fn a_blank_variable_does_not_hide_the_next_one() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == name)
+                    .map(|(_, v)| v.to_string())
+            }
+        };
+        assert_eq!(
+            first_set(
+                &["USERNAME", "USER"],
+                env(&[("USERNAME", " "), ("USER", "alice")])
+            )
+            .as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            first_set(
+                &["USERNAME", "USER"],
+                env(&[("USERNAME", ""), ("USER", "alice")])
+            )
+            .as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            first_set(
+                &["USERNAME", "USER"],
+                env(&[("USERNAME", "bob"), ("USER", "alice")])
+            )
+            .as_deref(),
+            Some("bob")
+        );
+        assert_eq!(
+            first_set(&["USERNAME", "USER"], env(&[("USERNAME", " ")])),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_home_folder_matches_however_its_path_is_spelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("Profile");
+        repo(&profile, Some("https://github.com/alice/dotfiles"));
+        let spelled = PathBuf::from(format!("{}\\", profile.to_string_lossy().to_uppercase()));
+        assert_eq!(
+            local_checkout_as(&profile, None, Some(&spelled))
+                .unwrap()
+                .name,
+            None
+        );
     }
 }
