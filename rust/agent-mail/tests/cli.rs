@@ -692,6 +692,8 @@ async fn rust_to_rust_carries_the_checkout_intent_and_claude_session() {
             "auto",
             "--intent",
             "notify",
+            "--harness",
+            "claude",
         ],
     )
     .await;
