@@ -328,14 +328,24 @@ pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
 /// 1.3 `checkout` carries it. `None` outside a git checkout. No path leaves this function, and the
 /// folder name is left out when it is the OS user name (a repo at the profile folder).
 pub fn local_checkout(dir: &Path) -> Option<crate::envelope::Checkout> {
-    let user = std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .ok();
-    local_checkout_as(dir, user.as_deref())
+    let set = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
+    let user = set("USERNAME").or_else(|| set("USER"));
+    let home = set("USERPROFILE")
+        .or_else(|| set("HOME"))
+        .map(PathBuf::from);
+    local_checkout_as(dir, user.as_deref(), home.as_deref())
 }
 
-/// `local_checkout` with the OS user name passed in, for tests.
-pub fn local_checkout_as(dir: &Path, user: Option<&str>) -> Option<crate::envelope::Checkout> {
+/// `local_checkout` with the OS user name and home folder passed in, for tests.
+pub(crate) fn local_checkout_as(
+    dir: &Path,
+    user: Option<&str>,
+    home: Option<&Path>,
+) -> Option<crate::envelope::Checkout> {
     let top = dir
         .ancestors()
         .find(|folder| folder.join(".git").exists())?;
@@ -347,9 +357,18 @@ pub fn local_checkout_as(dir: &Path, user: Option<&str>) -> Option<crate::envelo
                 matches!(value.len(), 40 | 64) && value.bytes().all(|b| b.is_ascii_hexdigit())
             })
     };
+    // A repo at the profile folder would send the user's folder name, whatever it is called.
+    let at_home =
+        home.is_some_and(
+            |home| match (std::fs::canonicalize(top), std::fs::canonicalize(home)) {
+                (Ok(top), Ok(home)) => path_key(&top) == path_key(&home),
+                _ => false,
+            },
+        );
     let name = top
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
+        .filter(|_| !at_home)
         .filter(|name| user.is_none_or(|user| !name.eq_ignore_ascii_case(user.trim())));
     // The roots alone must be valid; each optional part is kept only if it fits the envelope's
     // limits on its own, so one bad part never costs the others.
@@ -783,7 +802,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home_repo = dir.path().join("alice");
         repo(&home_repo, Some("https://github.com/alice/dotfiles"));
-        let as_alice = local_checkout_as(&home_repo, Some("Alice")).unwrap();
+        let as_alice = local_checkout_as(&home_repo, Some("Alice"), None).unwrap();
         assert_eq!(
             as_alice.name, None,
             "a repo at the profile folder doesn't send the user name"
@@ -793,7 +812,7 @@ mod tests {
             Some("github.com/alice/dotfiles"),
             "the rest is kept"
         );
-        let as_bob = local_checkout_as(&home_repo, Some("bob")).unwrap();
+        let as_bob = local_checkout_as(&home_repo, Some("bob"), None).unwrap();
         assert_eq!(as_bob.name.as_deref(), Some("alice"));
     }
 
@@ -804,7 +823,7 @@ mod tests {
         let app = dir.path().join("my app");
         repo(&app, Some("https://github.com/o/app"));
         run(&app, &["checkout", "-q", "-b", "feature/x"]);
-        let checkout = local_checkout_as(&app, None).unwrap();
+        let checkout = local_checkout_as(&app, None, None).unwrap();
         assert_eq!(checkout.name, None);
         assert_eq!(
             checkout.branch.as_deref(),
@@ -812,6 +831,35 @@ mod tests {
             "kept although the name was dropped"
         );
         assert_eq!(checkout.origin.as_deref(), Some("github.com/o/app"));
+        assert!(checkout.head.is_some());
+    }
+
+    #[test]
+    fn a_repo_at_the_home_folder_sends_no_name_whatever_the_folder_is_called() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("alice.DESKTOP-1");
+        repo(&profile, Some("https://github.com/alice/dotfiles"));
+        let at_home = local_checkout_as(&profile, Some("alice"), Some(&profile)).unwrap();
+        assert_eq!(
+            at_home.name, None,
+            "the profile folder's name is the user's"
+        );
+        assert_eq!(at_home.origin.as_deref(), Some("github.com/alice/dotfiles"));
+        let elsewhere = local_checkout_as(&profile, Some("alice"), Some(dir.path())).unwrap();
+        assert_eq!(elsewhere.name.as_deref(), Some("alice.DESKTOP-1"));
+    }
+
+    #[test]
+    fn an_invalid_origin_is_dropped_and_the_branch_name_and_head_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        // Normalizes to github.com/o/a+b, which the envelope's origin limit refuses.
+        repo(&app, Some("https://github.com/o/a+b"));
+        run(&app, &["checkout", "-q", "-b", "feature/x"]);
+        let checkout = local_checkout_as(&app, None, None).unwrap();
+        assert_eq!(checkout.origin, None);
+        assert_eq!(checkout.branch.as_deref(), Some("feature/x"));
+        assert_eq!(checkout.name.as_deref(), Some("app"));
         assert!(checkout.head.is_some());
     }
 }
