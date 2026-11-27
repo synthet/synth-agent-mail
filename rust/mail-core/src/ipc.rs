@@ -1,7 +1,7 @@
 //! The local line protocol between the CLI (and later MCP and the tray) and the mailer.
 //!
-//! One request line, one reply line: `poke` (the outbox changed; reply `ok`) and `status` (a JSON
-//! line). It is an optimization only: the mailer also polls `mail.db`, so a missed poke delays
+//! One request line, one reply line: `poke` (the outbox changed; reply `ok`), `status` (a JSON
+//! line) and `wait` (sleep until new mail is stored; see [`wait_received`]). It is an optimization only: the mailer also polls `mail.db`, so a missed poke delays
 //! delivery by a couple of seconds and loses nothing. The channel is per home, so two homes on one
 //! PC (tests, or the TS and Rust stacks side by side) never share a mailer. Owning the channel is
 //! also what keeps a second mailer off the same home.
@@ -82,6 +82,25 @@ fn read_line(reader: impl std::io::Read) -> std::io::Result<String> {
 /// Tells the mailer the outbox changed. False when no mailer is running for this home.
 pub fn poke(home: &Path) -> bool {
     request(home, "poke", Duration::from_secs(2)).is_ok_and(|reply| reply == "ok")
+}
+
+/// The longest a `wait` request may hold the channel.
+pub const MAX_WAIT: Duration = Duration::from_secs(10);
+
+/// Blocks until the mailer has stored mail it hadn't stored at `seen` (a count it returned
+/// earlier), or until `wait` passes, and returns the mailer's current count. `None` as `seen` asks
+/// for the count without waiting. `None` back means no mailer answered, so callers poll instead.
+/// Counts restart with the mailer; any count other than the current one answers at once.
+pub fn wait_received(home: &Path, seen: Option<u64>, wait: Duration) -> Option<u64> {
+    let wait = wait.min(MAX_WAIT);
+    let line = match seen {
+        Some(count) => format!("wait {count} {}", wait.as_millis()),
+        None => "wait - 0".to_owned(),
+    };
+    request(home, &line, wait + Duration::from_secs(2))
+        .ok()?
+        .parse()
+        .ok()
 }
 
 /// Which envelope a pinned peer accepts, as the mailer probed it (`envelope <fp>`). `None` when no

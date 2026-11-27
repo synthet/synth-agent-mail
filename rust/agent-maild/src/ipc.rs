@@ -14,6 +14,8 @@ pub struct Status {
     pub fingerprint: String,
     pub port: u16,
     pub outbox: Arc<crate::outbox::Outbox>,
+    /// How many new messages the receiver has stored since start; `wait` sleeps on it.
+    pub received: tokio::sync::watch::Receiver<u64>,
 }
 
 async fn answer(
@@ -51,6 +53,9 @@ async fn answer(
                 _ => json!({ "fingerprint": status.fingerprint, "port": status.port }).to_string(),
             }
         }
+        request if request.starts_with("wait ") => {
+            wait_reply(&request["wait ".len()..], status.received.clone()).await
+        }
         request if request.starts_with("envelope ") => {
             let fp = request["envelope ".len()..].trim();
             if !mail_core::js::is_fingerprint(fp) {
@@ -72,6 +77,31 @@ async fn answer(
     };
     let _ = write.write_all(format!("{reply}\n").as_bytes()).await;
     let _ = write.flush().await;
+}
+
+/// `wait <seen|-> <ms>`: answers the current count at once unless it still equals `seen`, otherwise
+/// when the next message is stored or `ms` (capped) passes.
+async fn wait_reply(args: &str, mut received: tokio::sync::watch::Receiver<u64>) -> String {
+    let mut parts = args.split_whitespace();
+    let (Some(seen), Some(ms), None) = (parts.next(), parts.next(), parts.next()) else {
+        return "error".to_owned();
+    };
+    let Ok(ms) = ms.parse::<u64>() else {
+        return "error".to_owned();
+    };
+    let seen = match seen {
+        "-" => None,
+        count => match count.parse::<u64>() {
+            Ok(count) => Some(count),
+            Err(_) => return "error".to_owned(),
+        },
+    };
+    if seen == Some(*received.borrow_and_update()) {
+        let wait = std::time::Duration::from_millis(ms).min(mail_core::ipc::MAX_WAIT);
+        let _ = tokio::time::timeout(wait, received.changed()).await;
+    }
+    let count = *received.borrow();
+    count.to_string()
 }
 
 #[cfg(windows)]

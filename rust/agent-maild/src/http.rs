@@ -40,6 +40,8 @@ pub struct Receiver {
     pub store: Mutex<Store>,
     /// The port this listener is bound to, advertised in `/identity`.
     pub port: u16,
+    /// Counts newly stored messages, so a waiting consumer wakes at once (`ipc` `wait`).
+    pub received: tokio::sync::watch::Sender<u64>,
 }
 
 /// Serves until the task is dropped or aborted.
@@ -192,9 +194,13 @@ fn accept(receiver: &Receiver, body: &[u8]) -> Result<Accepted, Failure> {
         .map_err(|_| Failure::Rejected)?
     };
     // The receipt goes out only after the message is committed.
-    match store.receive(&message).map_err(Failure::Store)? {
+    let received = store.receive(&message).map_err(Failure::Store)?;
+    match received {
         Received::Conflict => Ok(Accepted::Conflict),
         Received::New | Received::Duplicate => {
+            if matches!(received, Received::New) {
+                receiver.received.send_modify(|count| *count += 1);
+            }
             let packet = receipt(&receiver.identity, &message).map_err(Failure::Store)?;
             Ok(Accepted::Receipt(
                 serde_json::to_string(&packet).expect("packet serializes"),
