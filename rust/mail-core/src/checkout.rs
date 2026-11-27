@@ -344,8 +344,16 @@ pub fn candidate(path: &Path) -> Option<Candidate> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many scans this thread ran, for tests.
+    static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Every direct child of the roots that has a `.git`. A root is never itself a candidate.
 pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
+    #[cfg(test)]
+    SCANS.with(|scans| scans.set(scans.get() + 1));
     let mut found = Vec::new();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -356,6 +364,12 @@ pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
         found.extend(children.iter().filter_map(|child| candidate(child)));
     }
     found
+}
+
+/// Whether a miss recorded at `at` is still fresh at `now`. A miss from the future (the clock stepped
+/// back) counts as expired, so it can't outlive the TTL.
+fn fresh(at: u64, now: u64) -> bool {
+    at <= now && now - at < MISS_TTL.as_millis() as u64
 }
 
 /// How long a lookup that found nothing is remembered, so a peer's unresolvable identity can't make
@@ -445,7 +459,7 @@ impl Resolver<'_> {
             }
         }
         if let Some(at) = cache.misses.get(&key) {
-            if now_ms.saturating_sub(*at) < MISS_TTL.as_millis() as u64 {
+            if fresh(*at, now_ms) {
                 return Err(Unresolved::RecentMiss);
             }
         }
@@ -455,15 +469,17 @@ impl Resolver<'_> {
                 cache.checkouts.insert(key.clone(), path.clone());
                 cache.misses.remove(&key);
             }
-            Err(_) => {
+            // Only "nothing here" is remembered: Ambiguous and Fork keep their reason every time.
+            Err(Unresolved::NoMatch { .. }) => {
                 cache.checkouts.remove(&key);
                 cache.misses.insert(key, now_ms);
             }
+            Err(_) => {
+                cache.checkouts.remove(&key);
+            }
         }
         // Old misses don't pile up in the file.
-        cache
-            .misses
-            .retain(|_, at| now_ms.saturating_sub(*at) < MISS_TTL.as_millis() as u64);
+        cache.misses.retain(|_, at| fresh(*at, now_ms));
         self.save(&cache);
         chosen
     }
@@ -819,10 +835,15 @@ mod tests {
         // A matching clone appears, but the recent miss is remembered: no scan finds it yet.
         let app = roots[0].join("app");
         clone(&src, &app, "https://github.com/o/app");
-        assert_eq!(
-            resolver.resolve_at(&want, t0 + 1_000),
-            Err(Unresolved::RecentMiss)
-        );
+        let scans = || SCANS.with(|scans| scans.get());
+        let before = scans();
+        for step in 1..=5 {
+            assert_eq!(
+                resolver.resolve_at(&want, t0 + step * 1_000),
+                Err(Unresolved::RecentMiss)
+            );
+        }
+        assert_eq!(scans(), before, "five lookups inside the window, no scan");
         let later = t0 + MISS_TTL.as_millis() as u64 + 1;
         assert_eq!(
             resolver.resolve_at(&want, later),
@@ -834,5 +855,56 @@ mod tests {
             Ok(app),
             "and the hit clears the miss"
         );
+    }
+
+    #[test]
+    fn a_miss_from_a_clock_that_was_ahead_expires_and_ambiguity_is_never_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let src = dir.path().join("src");
+        repo(&src, Some("https://github.com/o/app"));
+        let roots = vec![dir.path().join("roots")];
+        std::fs::create_dir_all(&roots[0]).unwrap();
+        let want = identify(&src).unwrap();
+        let aliases = none();
+        let resolver = Resolver {
+            home: &home,
+            roots: &roots,
+            aliases: &aliases,
+        };
+        let t0 = 10_000_000_000;
+        let day = 86_400_000;
+        // Recorded while the clock was a day ahead; then the clock is back and a clone appears.
+        assert!(matches!(
+            resolver.resolve_at(&want, t0 + day),
+            Err(Unresolved::NoMatch { .. })
+        ));
+        let app = roots[0].join("app");
+        clone(&src, &app, "https://github.com/o/app");
+        assert_eq!(
+            resolver.resolve_at(&want, t0),
+            Ok(app),
+            "a future miss counts as expired"
+        );
+
+        // Two clones of the same repo: Ambiguous every time, never a cached RecentMiss.
+        clone(&src, &roots[0].join("app2"), "https://github.com/o/app");
+        let home2 = dir.path().join("home2");
+        std::fs::create_dir_all(&home2).unwrap();
+        let ambiguous = Resolver {
+            home: &home2,
+            roots: &roots,
+            aliases: &aliases,
+        };
+        for step in 0..2 {
+            assert!(
+                matches!(
+                    ambiguous.resolve_at(&want, t0 + step),
+                    Err(Unresolved::Ambiguous(_))
+                ),
+                "call {step}"
+            );
+        }
     }
 }
