@@ -360,6 +360,19 @@ mod tests {
         assert_eq!(user["type"], "user");
         assert_eq!(user["message"]["content"], "MAIL thread=t from=a id=i");
 
+        // The pid was reused (another start time): refused before anything is written.
+        record(
+            dir.path(),
+            pid,
+            "me",
+            "C:\\r\\app",
+            process_start(pid).map(|s| s - 50_000_000),
+            &pipe,
+        );
+        assert_eq!(
+            write_notice(dir.path(), &target, "x"),
+            Err(WriteError::Gone)
+        );
         // The record now names another session: nothing is written.
         record(
             dir.path(),

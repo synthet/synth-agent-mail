@@ -123,7 +123,12 @@ pub fn tick_in(
         store.record_backlog()?;
         return Ok(Vec::new());
     }
-    let live = sessions.map(crate::live::live_sessions).unwrap_or_default();
+    // Live sessions are read only when the owner turned live delivery on; with it off, routing is
+    // exactly what it was before ADR 0006.
+    let live = match (dispatch.live.enabled, sessions) {
+        (true, Some(dir)) => crate::live::live_sessions(dir),
+        _ => Vec::new(),
+    };
     let live_context: Vec<LiveSession> = live
         .iter()
         .map(|session| LiveSession {
@@ -138,12 +143,24 @@ pub fn tick_in(
         store.mark_handled(&message.sender, &message.id)?;
         let peer = dispatch.peer(&message.sender, &policy.auto_answer_types);
         let now = now_ms();
+        let rate_ok = rate.allows(&message.sender, now, dispatch.limits.per_peer_per_minute);
+        // Resolving a checkout can scan folders with git, so it runs only for mail that will get past
+        // the gate and the task skip, and only when a live session could receive it.
+        let routable = rate_ok
+            && peer.is_some()
+            && !live.is_empty()
+            && message.hop.unwrap_or(0) < mail_core::send::MAX_AUTO_HOP
+            && message.intent != Some(mail_core::envelope::Intent::Task);
         let context = Context {
-            rate_ok: rate.allows(&message.sender, now, dispatch.limits.per_peer_per_minute),
+            rate_ok,
             already_answered: store.has_auto_reply(&message.id, None)?,
             sessions: live_context.clone(),
             sent_in_conversation: store.sessions_sent_in(&message.conversation_id)?,
-            checkout: checkout_match(home, &policy, &message, &live),
+            checkout: if routable {
+                checkout_match(home, &policy, &message, &live)
+            } else {
+                CheckoutMatch::None
+            },
             ..Context::default()
         };
         let decision = decide(

@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use agent_mail_tray::consumer::{default_runners, tick, RateWindow};
+use agent_mail_tray::consumer::{default_runners, tick_in, RateWindow};
 use agent_maild::{start, Config, Mailer};
 use mail_core::envelope::Message;
 use mail_core::send::{submit, SendRequest};
@@ -146,7 +146,7 @@ async fn tagged_mail_runs_in_its_folder_and_the_reply_comes_back_with_the_guards
     let mut pass = move || {
         let (home, runners) = (bob_home.clone(), runners.clone());
         let mut window = std::mem::take(&mut rate);
-        let records = tick(&home, &mut window, &runners).unwrap();
+        let records = tick_in(&home, &mut window, &runners, None).unwrap();
         rate = window;
         records
     };
