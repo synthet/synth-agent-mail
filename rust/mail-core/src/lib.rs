@@ -5,6 +5,7 @@
 //! contract; see ADR 0005.
 
 pub mod canonical;
+pub mod checkout;
 pub mod dispatch;
 pub mod envelope;
 pub mod error;

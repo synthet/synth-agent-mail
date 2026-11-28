@@ -35,6 +35,13 @@ pub struct Policy {
     /// The folder for mail whose tag matches no `workspaces` key; without it such mail isn't run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_workspace: Option<crate::dispatch::WorkspacePolicy>,
+    /// Folders whose direct children may be checkouts that a peer's repo identity resolves to
+    /// (`checkout.rs`). Absolute paths; the owner's list, never the peer's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkout_roots: Vec<PathBuf>,
+    /// Renamed repos: an old normalized origin (`host/owner/name`) mapped to the current one.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub origin_aliases: std::collections::BTreeMap<String, String>,
 }
 
 fn empty_object() -> Value {
@@ -56,6 +63,8 @@ impl Policy {
             }),
             workspaces: Default::default(),
             default_workspace: None,
+            checkout_roots: Vec::new(),
+            origin_aliases: Default::default(),
         }
     }
 
@@ -121,6 +130,24 @@ impl Policy {
                     "workspaces",
                     format!("{tag}: path must be absolute"),
                 ));
+            }
+        }
+        if let Some(root) = self.checkout_roots.iter().find(|root| !root.is_absolute()) {
+            return Err(invalid(
+                "checkout_roots",
+                format!("{}: path must be absolute", root.display()),
+            ));
+        }
+        for (from, to) in &self.origin_aliases {
+            for origin in [from, to] {
+                if crate::checkout::norm_origin(&format!("https://{origin}")).as_deref()
+                    != Some(origin.as_str())
+                {
+                    return Err(invalid(
+                        "origin_aliases",
+                        format!("{origin}: use the lowercase host/owner/name form"),
+                    ));
+                }
             }
         }
         Ok(())
@@ -268,6 +295,48 @@ mod tests {
         };
         assert!(
             check_outbound("please git push origin main", Some("bob"), &relaxed, &store).is_ok()
+        );
+    }
+
+    #[test]
+    fn checkout_roots_must_be_absolute_and_aliases_normalized() {
+        let base = serde_json::to_value(Policy::template()).unwrap();
+        let with = |key: &str, value: serde_json::Value| {
+            let mut policy = base.clone();
+            policy[key] = value;
+            Policy::parse(&policy.to_string())
+        };
+        let root = if cfg!(windows) { r"C:\Repos" } else { "/repos" };
+        let ok = with("checkout_roots", serde_json::json!([root])).unwrap();
+        assert_eq!(ok.checkout_roots, vec![PathBuf::from(root)]);
+        assert!(with("checkout_roots", serde_json::json!(["Repos"]))
+            .unwrap_err()
+            .contains("absolute"));
+        let aliases = with(
+            "origin_aliases",
+            serde_json::json!({ "github.com/old/app": "github.com/new/app" }),
+        )
+        .unwrap();
+        assert_eq!(
+            aliases.origin_aliases["github.com/old/app"],
+            "github.com/new/app"
+        );
+        assert!(with(
+            "origin_aliases",
+            serde_json::json!({ "https://github.com/old/app": "github.com/new/app" })
+        )
+        .is_err());
+        assert!(with(
+            "origin_aliases",
+            serde_json::json!({ "github.com/Old/App": "github.com/new/app" })
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::to_value(Policy::template())
+                .unwrap()
+                .get("checkout_roots"),
+            None,
+            "the template does not gain keys"
         );
     }
 
