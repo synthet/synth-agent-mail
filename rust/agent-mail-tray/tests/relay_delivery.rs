@@ -129,7 +129,7 @@ fn with_the_pipe_off_the_relay_messages_the_checkout_session_and_only_when_enabl
     std::fs::write(
         &claude,
         format!(
-            "@echo off\r\necho %* > \"{m}\"\r\nmore >> \"{m}\"\r\necho {{\"type\":\"result\"}}\r\n",
+            "@echo off\r\necho %* > \"{m}\"\r\necho config=%CLAUDE_CONFIG_DIR%>> \"{m}\"\r\nmore >> \"{m}\"\r\necho {{\"type\":\"result\"}}\r\n",
             m = marker.display()
         ),
     )
@@ -164,6 +164,15 @@ fn with_the_pipe_off_the_relay_messages_the_checkout_session_and_only_when_enabl
     assert!(
         seen.contains("MAIL thread=") && !seen.contains("BODY-THAT-MUST-NOT"),
         "the notice, never the body"
+    );
+    let config = seen
+        .lines()
+        .find_map(|line| line.strip_prefix("config="))
+        .expect("the stub records CLAUDE_CONFIG_DIR");
+    assert_eq!(
+        config.trim_end(),
+        dir.path().display().to_string(),
+        "exactly the folder the tray read the sessions from, not a folder inside it"
     );
     std::fs::remove_file(&marker).unwrap();
 
