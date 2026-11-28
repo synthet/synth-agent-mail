@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mail_core::dispatch::{
-    append_ledger, compute_answer, decide, ledger_line, run_prompt, Context, Decision,
-    DispatchPolicy, Tier, WakeTarget, WakeVia,
+    append_ledger, compute_answer, decide, ledger_line, live_notice, run_prompt, CheckoutMatch,
+    Context, Decision, DispatchPolicy, LiveSession, Tier, WakeTarget, WakeVia, CLAUDE_CODE,
 };
 use mail_core::envelope::{AgentMeta, Message};
 use mail_core::outbox::Delivery;
@@ -99,11 +99,21 @@ pub fn spawn(home: PathBuf, runners: RunnerFactory) -> std::thread::JoinHandle<(
 
 type Failure = Box<dyn std::error::Error>;
 
-/// One pass over unhandled mail.
+/// One pass over unhandled mail, with Claude Code's session records in their usual place.
 pub fn tick(
     home: &Path,
     rate: &mut RateWindow,
     runners: &RunnerFactory,
+) -> Result<Vec<Record>, Failure> {
+    tick_in(home, rate, runners, crate::live::sessions_dir().as_deref())
+}
+
+/// One pass over unhandled mail, reading live Claude Code sessions from `sessions` (ADR 0006).
+pub fn tick_in(
+    home: &Path,
+    rate: &mut RateWindow,
+    runners: &RunnerFactory,
+    sessions: Option<&Path>,
 ) -> Result<Vec<Record>, Failure> {
     // No valid policy means no dispatch, never a default.
     let Ok(policy) = Policy::load(home) else {
@@ -119,14 +129,44 @@ pub fn tick(
         store.record_backlog()?;
         return Ok(Vec::new());
     }
+    // Live sessions are read only when the owner turned live delivery on; with it off, routing is
+    // exactly what it was before ADR 0006.
+    let live = match (dispatch.live.enabled, sessions) {
+        (true, Some(dir)) => crate::live::live_sessions(dir),
+        _ => Vec::new(),
+    };
+    let live_context: Vec<LiveSession> = live
+        .iter()
+        .map(|session| LiveSession {
+            session_id: session.session_id.clone(),
+            harness: Some(CLAUDE_CODE.into()),
+            harness_session_id: None,
+            display_name: session.name.clone(),
+        })
+        .collect();
     let mut records = Vec::new();
     for message in store.unhandled_inbox(BATCH)? {
         store.mark_handled(&message.sender, &message.id)?;
         let peer = dispatch.peer(&message.sender, &policy.auto_answer_types);
         let now = now_ms();
+        let rate_ok = rate.allows(&message.sender, now, dispatch.limits.per_peer_per_minute);
+        // Resolving a checkout can scan folders with git, so it runs only for mail that will get past
+        // the gate and the task skip, and only when a live session could receive it.
+        let routable = rate_ok
+            && peer.is_some()
+            && !live.is_empty()
+            && message.hop.unwrap_or(0) < mail_core::send::MAX_AUTO_HOP
+            && message.intent != Some(mail_core::envelope::Intent::Task);
         let context = Context {
-            rate_ok: rate.allows(&message.sender, now, dispatch.limits.per_peer_per_minute),
+            rate_ok,
             already_answered: store.has_auto_reply(&message.id, None)?,
+            sessions: live_context.clone(),
+            sent_in_conversation: store.sessions_sent_in(&message.conversation_id)?,
+            checkout: if routable {
+                checkout_match(home, &policy, &message, &live)
+            } else {
+                CheckoutMatch::None
+            },
             ..Context::default()
         };
         let decision = decide(
@@ -177,10 +217,37 @@ pub fn tick(
             }
             Decision::Wake(target) => {
                 rate.record(&message.sender, now);
-                // Waking a local session arrives with T-7; until then the message waits in the inbox.
+                let outcome = match (&target, sessions) {
+                    (WakeTarget::ClaudeSession { session_id, .. }, Some(dir))
+                        if dispatch.live.enabled =>
+                    {
+                        match live
+                            .iter()
+                            .find(|session| &session.session_id == session_id)
+                        {
+                            Some(session) => {
+                                let label = store
+                                    .contact(&message.sender)
+                                    .ok()
+                                    .flatten()
+                                    .map(|contact| contact.identity.name);
+                                let notice = live_notice(&message, label.as_deref());
+                                // "written": the pipe sends no acknowledgement (ADR 0006).
+                                match crate::live::write_notice(dir, session, &notice) {
+                                    Ok(()) => "written".to_owned(),
+                                    Err(error) => error.to_string(),
+                                }
+                            }
+                            None => "the session is gone".to_owned(),
+                        }
+                    }
+                    (WakeTarget::ClaudeSession { .. }, _) => "live delivery is off".to_owned(),
+                    // Other wake paths arrive with the relay (af-0vyj1); the message waits in the inbox.
+                    _ => "not available yet".to_owned(),
+                };
                 record(
                     "wake",
-                    format!("{}: not available yet", describe(&target)),
+                    format!("{}: {outcome}", describe(&target)),
                     None,
                     None,
                 );
@@ -215,14 +282,45 @@ pub fn tick(
     Ok(records)
 }
 
+/// ADR 0006 decision 4.3: which live session, if any, works in the checkout the message names.
+fn checkout_match(
+    home: &Path,
+    policy: &Policy,
+    message: &Message,
+    live: &[crate::live::ClaudeSession],
+) -> CheckoutMatch {
+    let Some(checkout) = &message.checkout else {
+        return CheckoutMatch::None;
+    };
+    let resolver = mail_core::checkout::Resolver {
+        home,
+        roots: &policy.checkout_roots,
+        aliases: &policy.origin_aliases,
+    };
+    let want = mail_core::checkout::RepoId {
+        roots: checkout.roots.clone(),
+        origin: checkout.origin.clone(),
+    };
+    let Ok(folder) = resolver.resolve(&want) else {
+        return CheckoutMatch::None;
+    };
+    match crate::live::inside(live, &folder).as_slice() {
+        [] => CheckoutMatch::None,
+        [only] => CheckoutMatch::One(only.session_id.clone()),
+        _ => CheckoutMatch::Ambiguous,
+    }
+}
+
 fn describe(target: &WakeTarget) -> String {
     let via = |via: &WakeVia| match via {
         WakeVia::ToSession => "to_session",
         WakeVia::Lease => "lease",
+        WakeVia::Checkout => "checkout",
         WakeVia::Destination => "destination",
     };
     match target {
         WakeTarget::Claude { via: v, .. } => format!("claude via {}", via(v)),
+        WakeTarget::ClaudeSession { via: v, .. } => format!("claude-code via {}", via(v)),
         WakeTarget::Codex { via: v, .. } => format!("codex via {}", via(v)),
     }
 }
