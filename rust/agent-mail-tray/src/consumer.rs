@@ -229,7 +229,11 @@ pub fn tick_in(
                         &notice,
                         dispatch.limits.budget_usd,
                         &crate::relay::workdir(home),
-                        sessions.and_then(Path::parent),
+                        crate::relay::relay_config(
+                            sessions,
+                            crate::relay::default_config().as_deref(),
+                        )
+                        .as_deref(),
                     )
                 };
                 let outcome = match &target {
