@@ -98,7 +98,14 @@ async fn wait_reply(args: &str, mut received: tokio::sync::watch::Receiver<u64>)
     };
     if seen == Some(*received.borrow_and_update()) {
         let wait = std::time::Duration::from_millis(ms).min(mail_core::ipc::MAX_WAIT);
-        let _ = tokio::time::timeout(wait, received.changed()).await;
+        let deadline = tokio::time::Instant::now() + wait;
+        // A dropped sender makes changed() fail at once; sleep out the wait so no caller spins.
+        if tokio::time::timeout_at(deadline, received.changed())
+            .await
+            .is_ok_and(|changed| changed.is_err())
+        {
+            tokio::time::sleep_until(deadline).await;
+        }
     }
     let count = *received.borrow();
     count.to_string()
@@ -157,4 +164,34 @@ pub fn serve(
             tokio::spawn(answer(stream, notify.clone(), status.clone()));
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn a_wait_whose_counter_is_gone_sleeps_out_its_time_instead_of_answering_at_once() {
+        let (sender, received) = tokio::sync::watch::channel(0u64);
+        drop(sender);
+        let started = Instant::now();
+        assert_eq!(wait_reply("0 400", received).await, "0");
+        assert!(
+            started.elapsed() >= Duration::from_millis(380),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_message_still_answers_at_once() {
+        let (sender, received) = tokio::sync::watch::channel(0u64);
+        let started = Instant::now();
+        let waiter = tokio::spawn(wait_reply("0 5000", received));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        sender.send_modify(|count| *count += 1);
+        assert_eq!(waiter.await.unwrap(), "1");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 }
