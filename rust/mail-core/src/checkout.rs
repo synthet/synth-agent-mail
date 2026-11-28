@@ -210,29 +210,55 @@ fn git(dir: &Path, args: &[&str]) -> Option<String> {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut child = command.spawn().ok()?;
+    let child = command.spawn().ok()?;
+    run_limited(child, GIT_TIMEOUT)
+}
+
+/// Waits for `child` at most `limit`, reading its stdout meanwhile. On timeout the whole process tree
+/// is killed (git on Windows is a launcher whose real git outlives it), and nothing waits on a
+/// leftover process that still holds the pipe.
+fn run_limited(mut child: std::process::Child, limit: Duration) -> Option<String> {
     // Read while git runs, so a full pipe can't stall it until the time limit.
     let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut out = String::new();
-        std::io::Read::read_to_string(&mut stdout, &mut out).map(|_| out)
+        let _ = sender.send(std::io::Read::read_to_string(&mut stdout, &mut out).map(|_| out));
     });
     let started = Instant::now();
     let success = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),
-            Ok(None) if started.elapsed() <= GIT_TIMEOUT => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
+            Ok(None) if started.elapsed() <= limit => std::thread::sleep(Duration::from_millis(20)),
             _ => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_tree(&mut child);
                 break false;
             }
         }
     };
-    let out = reader.join().ok()?.ok()?;
-    success.then_some(out)
+    if !success {
+        return None;
+    }
+    let left = limit
+        .saturating_sub(started.elapsed())
+        .max(Duration::from_secs(1));
+    received.recv_timeout(left).ok()?.ok()
+}
+
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// True when git's work tree for `dir` is `dir` itself.
@@ -700,5 +726,36 @@ mod tests {
                 bogus.display()
             );
         }
+    }
+
+    #[test]
+    fn the_time_limit_holds_when_a_child_outlives_its_parent() {
+        // The parent waits on a long child that holds the same stdout, as git's launcher does.
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping -n 30 127.0.0.1"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = Command::new("sh");
+            c.args(["-c", "sleep 30; true"]);
+            c
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let started = Instant::now();
+        assert_eq!(
+            run_limited(command.spawn().unwrap(), Duration::from_secs(1)),
+            None
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 }
