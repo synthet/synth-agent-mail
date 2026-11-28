@@ -49,15 +49,23 @@ pub struct Candidate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Unresolved {
     NoRoots,
-    NoMatch { skipped: Vec<PathBuf> },
+    NoMatch {
+        skipped: Vec<PathBuf>,
+    },
     Ambiguous(Vec<PathBuf>),
-    Fork { path: PathBuf, origin: String },
+    Fork {
+        path: PathBuf,
+        origin: String,
+    },
+    /// The same identity found nothing a moment ago; it isn't rescanned until [`MISS_TTL`] passes.
+    RecentMiss,
 }
 
 impl std::fmt::Display for Unresolved {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Unresolved::NoRoots => write!(f, "no checkout_roots in policy.json"),
+            Unresolved::RecentMiss => write!(f, "no checkout of this repo (checked recently)"),
             Unresolved::NoMatch { skipped } => {
                 write!(f, "no checkout of this repo under checkout_roots")?;
                 for path in skipped {
@@ -336,8 +344,16 @@ pub fn candidate(path: &Path) -> Option<Candidate> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many scans this thread ran, for tests.
+    static SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Every direct child of the roots that has a `.git`. A root is never itself a candidate.
 pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
+    #[cfg(test)]
+    SCANS.with(|scans| scans.set(scans.get() + 1));
     let mut found = Vec::new();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -350,10 +366,23 @@ pub fn scan(roots: &[PathBuf]) -> Vec<Candidate> {
     found
 }
 
+/// Whether a miss recorded at `at` is still fresh at `now`. A miss from the future (the clock stepped
+/// back) counts as expired, so it can't outlive the TTL.
+fn fresh(at: u64, now: u64) -> bool {
+    at <= now && now - at < MISS_TTL.as_millis() as u64
+}
+
+/// How long a lookup that found nothing is remembered, so a peer's unresolvable identity can't make
+/// every message scan the roots with git.
+pub const MISS_TTL: Duration = Duration::from_secs(300);
+
 #[derive(Default, Serialize, Deserialize)]
 struct Cache {
     #[serde(default)]
     checkouts: BTreeMap<String, PathBuf>,
+    /// Key -> when (ms since the epoch) a scan last found nothing for it.
+    #[serde(default)]
+    misses: BTreeMap<String, u64>,
 }
 
 /// Resolves repo identities against the owner's roots, caching each answer in `<home>/checkouts.json`.
@@ -396,6 +425,15 @@ impl Resolver<'_> {
     }
 
     pub fn resolve(&self, want: &RepoId) -> Result<PathBuf, Unresolved> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        self.resolve_at(want, now)
+    }
+
+    /// `resolve` with the clock passed in, for tests.
+    pub fn resolve_at(&self, want: &RepoId, now_ms: u64) -> Result<PathBuf, Unresolved> {
         if self.roots.is_empty() {
             return Err(Unresolved::NoRoots);
         }
@@ -420,15 +458,28 @@ impl Resolver<'_> {
                 }
             }
         }
+        if let Some(at) = cache.misses.get(&key) {
+            if fresh(*at, now_ms) {
+                return Err(Unresolved::RecentMiss);
+            }
+        }
         let chosen = choose(want, &scan(self.roots), self.aliases);
         match &chosen {
             Ok(path) => {
-                cache.checkouts.insert(key, path.clone());
+                cache.checkouts.insert(key.clone(), path.clone());
+                cache.misses.remove(&key);
+            }
+            // Only "nothing here" is remembered: Ambiguous and Fork keep their reason every time.
+            Err(Unresolved::NoMatch { .. }) => {
+                cache.checkouts.remove(&key);
+                cache.misses.insert(key, now_ms);
             }
             Err(_) => {
                 cache.checkouts.remove(&key);
             }
         }
+        // Old misses don't pile up in the file.
+        cache.misses.retain(|_, at| fresh(*at, now_ms));
         self.save(&cache);
         chosen
     }
@@ -717,6 +768,7 @@ mod tests {
         for bogus in [roots[0].join(".."), outer.clone()] {
             let cache = Cache {
                 checkouts: BTreeMap::from([(resolver.key(&want), bogus.clone())]),
+                ..Cache::default()
             };
             resolver.save(&cache);
             assert_eq!(
@@ -757,5 +809,102 @@ mod tests {
             "took {:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn a_lookup_that_found_nothing_is_not_rescanned_until_the_miss_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let src = dir.path().join("src");
+        repo(&src, Some("https://github.com/o/app"));
+        let roots = vec![dir.path().join("roots")];
+        std::fs::create_dir_all(&roots[0]).unwrap();
+        let want = identify(&src).unwrap();
+        let aliases = none();
+        let resolver = Resolver {
+            home: &home,
+            roots: &roots,
+            aliases: &aliases,
+        };
+        let t0 = 1_000_000;
+        assert!(matches!(
+            resolver.resolve_at(&want, t0),
+            Err(Unresolved::NoMatch { .. })
+        ));
+        // A matching clone appears, but the recent miss is remembered: no scan finds it yet.
+        let app = roots[0].join("app");
+        clone(&src, &app, "https://github.com/o/app");
+        let scans = || SCANS.with(|scans| scans.get());
+        let before = scans();
+        for step in 1..=5 {
+            assert_eq!(
+                resolver.resolve_at(&want, t0 + step * 1_000),
+                Err(Unresolved::RecentMiss)
+            );
+        }
+        assert_eq!(scans(), before, "five lookups inside the window, no scan");
+        let later = t0 + MISS_TTL.as_millis() as u64 + 1;
+        assert_eq!(
+            resolver.resolve_at(&want, later),
+            Ok(app.clone()),
+            "rescanned once the miss expired"
+        );
+        assert_eq!(
+            resolver.resolve_at(&want, later + 1),
+            Ok(app),
+            "and the hit clears the miss"
+        );
+    }
+
+    #[test]
+    fn a_miss_from_a_clock_that_was_ahead_expires_and_ambiguity_is_never_cached() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let src = dir.path().join("src");
+        repo(&src, Some("https://github.com/o/app"));
+        let roots = vec![dir.path().join("roots")];
+        std::fs::create_dir_all(&roots[0]).unwrap();
+        let want = identify(&src).unwrap();
+        let aliases = none();
+        let resolver = Resolver {
+            home: &home,
+            roots: &roots,
+            aliases: &aliases,
+        };
+        let t0 = 10_000_000_000;
+        let day = 86_400_000;
+        // Recorded while the clock was a day ahead; then the clock is back and a clone appears.
+        assert!(matches!(
+            resolver.resolve_at(&want, t0 + day),
+            Err(Unresolved::NoMatch { .. })
+        ));
+        let app = roots[0].join("app");
+        clone(&src, &app, "https://github.com/o/app");
+        assert_eq!(
+            resolver.resolve_at(&want, t0),
+            Ok(app),
+            "a future miss counts as expired"
+        );
+
+        // Two clones of the same repo: Ambiguous every time, never a cached RecentMiss.
+        clone(&src, &roots[0].join("app2"), "https://github.com/o/app");
+        let home2 = dir.path().join("home2");
+        std::fs::create_dir_all(&home2).unwrap();
+        let ambiguous = Resolver {
+            home: &home2,
+            roots: &roots,
+            aliases: &aliases,
+        };
+        for step in 0..2 {
+            assert!(
+                matches!(
+                    ambiguous.resolve_at(&want, t0 + step),
+                    Err(Unresolved::Ambiguous(_))
+                ),
+                "call {step}"
+            );
+        }
     }
 }
