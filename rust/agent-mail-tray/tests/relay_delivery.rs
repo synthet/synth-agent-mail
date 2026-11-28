@@ -165,9 +165,14 @@ fn with_the_pipe_off_the_relay_messages_the_checkout_session_and_only_when_enabl
         seen.contains("MAIL thread=") && !seen.contains("BODY-THAT-MUST-NOT"),
         "the notice, never the body"
     );
-    assert!(
-        seen.contains(&format!("config={}", dir.path().display())),
-        "the relay gets the folder the tray read the sessions from: {seen}"
+    let config = seen
+        .lines()
+        .find_map(|line| line.strip_prefix("config="))
+        .expect("the stub records CLAUDE_CONFIG_DIR");
+    assert_eq!(
+        config.trim_end(),
+        dir.path().display().to_string(),
+        "exactly the folder the tray read the sessions from, not a folder inside it"
     );
     std::fs::remove_file(&marker).unwrap();
 

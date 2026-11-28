@@ -311,6 +311,12 @@ mod tests {
             !pipe_shaped(&format!("{good}{}", "a".repeat(300))),
             "longer than 260 characters"
         );
+        if cfg!(windows) {
+            assert!(
+                !pipe_shaped(r"\\.\pipe\"),
+                "the bare pipe prefix names no pipe"
+            );
+        }
     }
 
     #[test]
