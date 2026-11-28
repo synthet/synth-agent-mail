@@ -30,6 +30,8 @@ fn message(from: &Identity, to: &Identity, id: &str) -> Message {
         auto_reply: None,
         in_reply_to: None,
         project: None,
+        checkout: None,
+        intent: None,
         signature: String::new(),
     }
     .sign(from, Envelope::V1_2)
