@@ -74,7 +74,8 @@ pub fn default_runners() -> RunnerFactory {
     })
 }
 
-/// Runs passes every few seconds on its own thread until the process exits.
+/// Runs passes on its own thread until the process exits: right after the mailer stores new mail
+/// (it answers a waiting `ipc::wait_received`), and every few seconds when no mailer answers.
 pub fn spawn(home: PathBuf, runners: RunnerFactory) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut rate = RateWindow::default();
@@ -82,11 +83,16 @@ pub fn spawn(home: PathBuf, runners: RunnerFactory) -> std::thread::JoinHandle<(
         if let Err(error) = Store::open(&home).and_then(|store| store.expire_unfinished_runs()) {
             eprintln!("agent-mail-tray: consumer: expiring old runs: {error}");
         }
+        let mut seen = None;
         loop {
             if let Err(error) = tick(&home, &mut rate, &runners) {
                 eprintln!("agent-mail-tray: consumer: {error}");
             }
-            std::thread::sleep(POLL);
+            let started = std::time::Instant::now();
+            seen = ipc::wait_received(&home, seen, POLL);
+            if seen.is_none() {
+                std::thread::sleep(POLL.saturating_sub(started.elapsed()));
+            }
         }
     })
 }

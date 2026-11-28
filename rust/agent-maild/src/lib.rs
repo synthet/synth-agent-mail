@@ -118,10 +118,12 @@ pub async fn start(config: Config) -> Result<Mailer, BoxError> {
     let store = Store::open(&config.home)?;
     let listener = TcpListener::bind(config.listen).await?;
     let port = listener.local_addr()?.port();
+    let (received, received_count) = tokio::sync::watch::channel(0u64);
     let receiver = Arc::new(http::Receiver {
         identity: identity.clone(),
         store: Mutex::new(store),
         port,
+        received,
     });
     let mut tasks = Vec::new();
     if config.deliver {
@@ -134,6 +136,7 @@ pub async fn start(config: Config) -> Result<Mailer, BoxError> {
             fingerprint: fingerprint.clone(),
             port,
             outbox: outbox.clone(),
+            received: received_count,
         });
         tasks.push(ipc::serve(notify.clone(), status)?);
         tasks.push(tokio::spawn(outbox.run(notify)));
